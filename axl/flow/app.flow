@@ -1,0 +1,17 @@
+-- Skyborn for Devs — the agent-facing action surface.
+--
+-- The AXL engine sits in front of Skyborn and forwards each call to BASE_URL.
+-- It validates shapes, applies rate limits and speaks REST + MCP; it owns no
+-- auth, payment or identity logic of its own, and it never validates the
+-- bearer token — it passes Authorization through unchanged. Every scope check,
+-- spending-cap check and ownership check therefore lives in Skyborn's core
+-- service layer, which is where it has to be anyway (spec Section 8).
+
+APP skyborn
+NAME "Skyborn for Devs"
+VERSION 1.0.0
+DESCRIPTION "A verified human's agent acting on their behalf: money, email, SMS, calls and one-time codes, machine to machine."
+BASE_URL http://localhost:3000
+
+GENERATORS
+  DIAGRAM

@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
+import { Suspense } from "react";
+
 import { AuthShell } from "@/components/auth-shell";
 import { getCurrentUser } from "@/lib/auth";
 import { SigninForm } from "./signin-form";
@@ -35,7 +37,11 @@ export default async function SigninPage({
         </>
       }
     >
-      <SigninForm defaultEmail={params.email} />
+      {/* useSearchParams needs a boundary; the form is tiny so the fallback
+          simply reserves its space. */}
+      <Suspense fallback={<div className="h-64" />}>
+        <SigninForm defaultEmail={params.email} />
+      </Suspense>
     </AuthShell>
   );
 }

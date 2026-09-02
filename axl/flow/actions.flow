@@ -1,0 +1,101 @@
+-- Each ACTION forwards to the Skyborn endpoint that already implements it.
+-- The per-input DESC lines are carried into the MCP tool schema, so a calling
+-- model sees what an argument means rather than only its type.
+
+ACTION wallet_transactions
+  DESC "List recent ledger entries for the handle's wallet, newest first."
+  INPUT
+    limit : Number OPTIONAL DESC "How many entries to return, up to 200. Defaults to 50."
+  OUTPUT List<LedgerEntry>
+  ENDPOINT GET /api/v1/wallet/transactions
+
+ACTION wallet_topup
+  DESC "Pull funds into the wallet from the standing funding mandate. No card entry and no OTP — the human authorized this once, in advance."
+  INPUT
+    amount_paise : String REQUIRED DESC "Amount in paise as a string. ₹1 is \"100\". Must be at or below the mandate's per-pull cap of ₹15,000; call this more than once for a larger total."
+  OUTPUT TopupResult
+  ENDPOINT POST /api/v1/wallet/topup
+  EVENT WalletToppedUp
+  EFFECTS "Debits the human's bank account through the mandate they registered."
+
+ACTION wallet_transfer
+  DESC "Send money to another Skyborn handle. Internal double-entry transfer — instant, free, and never near a card network."
+  INPUT
+    to_handle    : String REQUIRED DESC "The recipient handle's email address, or its agent id."
+    amount_paise : String REQUIRED DESC "Amount in paise as a string. ₹1 is \"100\"."
+    description  : String OPTIONAL DESC "Note stored on both ledger entries."
+  OUTPUT TransferResult
+  ENDPOINT POST /api/v1/wallet/transfer
+  EVENT MoneyTransferred
+  IRREVERSIBLE false
+  EFFECTS "Moves money out of this wallet immediately and counts against the grant's spending cap."
+  SIDE_EFFECTS "Reversible through wallet_refund, but only while the recipient still holds the funds."
+
+ACTION wallet_refund
+  DESC "Reverse a prior transfer or top-up. Writes new refund entries; the original is never altered."
+  INPUT
+    original_entry_id : String REQUIRED DESC "The ledger entry id being reversed, from wallet_transactions."
+    reason            : String OPTIONAL DESC "Note stored on the refund entries."
+  OUTPUT RefundResult
+  ENDPOINT POST /api/v1/wallet/refund
+  SIDE_EFFECTS "Internal reversals are instant. A card-network refund follows the network's own 3-7 business day timeline, which Skyborn cannot shorten."
+
+ACTION wallet_payout
+  DESC "Withdraw from the wallet to an external bank account or UPI handle."
+  INPUT
+    amount_paise : String REQUIRED DESC "Amount in paise as a string. ₹1 is \"100\"."
+    destination  : String REQUIRED DESC "UPI VPA or bank account reference to pay out to."
+  OUTPUT PayoutResult
+  ENDPOINT POST /api/v1/wallet/payout
+  EVENT PayoutCreated
+  IRREVERSIBLE true
+  EFFECTS "Sends money outside Skyborn and counts against the grant's spending cap."
+  SIDE_EFFECTS "Once settled at the receiving bank this cannot be reversed from here."
+
+ACTION messages_send
+  DESC "Send an email or SMS from the handle's own address or number."
+  INPUT
+    channel : String REQUIRED DESC "Either \"email\" or \"sms\"."
+    to      : String REQUIRED DESC "Recipient email address, or phone number in E.164 form."
+    subject : String OPTIONAL DESC "Email subject line. Ignored for SMS."
+    body    : String REQUIRED DESC "The message body."
+  OUTPUT SendResult
+  ENDPOINT POST /api/v1/messages/send
+  EVENT MessageSent
+  IRREVERSIBLE true
+  EFFECTS "Delivers a message to a third party. It cannot be unsent."
+
+ACTION messages_read
+  DESC "Read the handle's messages, newest first."
+  INPUT
+    channel : String OPTIONAL DESC "Restrict to one channel: email, sms or call."
+    limit   : Number OPTIONAL DESC "How many messages to return, up to 200. Defaults to 50."
+  OUTPUT List<Message>
+  ENDPOINT GET /api/v1/messages/read
+
+ACTION messages_otp_latest
+  DESC "Return the most recent one-time code sent to the handle. Only inbound messages are searched, and only recent ones — a stale code would be rejected by whatever asked for it."
+  INPUT
+    channel        : String OPTIONAL DESC "Restrict to one channel: email or sms."
+    from           : String OPTIONAL DESC "Only consider messages whose sender matches this."
+    within_minutes : Number OPTIONAL DESC "How far back to look. Defaults to 15."
+  OUTPUT OtpResult
+  ENDPOINT GET /api/v1/messages/otp/latest
+
+ACTION calls_make
+  DESC "Place a voice call from the handle's number."
+  INPUT
+    to     : String REQUIRED DESC "Phone number to call, in E.164 form."
+    script : String REQUIRED DESC "What the agent should say on the call."
+  OUTPUT CallResult
+  ENDPOINT POST /api/v1/calls
+  EVENT CallPlaced
+  IRREVERSIBLE true
+  EFFECTS "Places a real phone call to a third party."
+
+ACTION calls_status
+  DESC "Check the status and transcript of a call this handle placed."
+  INPUT
+    call_id : String REQUIRED DESC "The id returned by calls_make."
+  OUTPUT CallStatus
+  ENDPOINT GET /api/v1/calls/status

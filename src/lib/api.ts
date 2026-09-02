@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { CoreError } from "@/server/core";
-import { GrantError, authenticateBearer, bearerFromHeader } from "@/server/grants";
+import { GrantError, authenticateBearer, bearerFromRequest } from "@/server/grants";
 import { MoneyParseError } from "@/lib/money";
 import { WalletError } from "@/server/wallet";
 import { MessagingError } from "@/server/messaging";
@@ -47,9 +47,13 @@ export function errorResponse(error: unknown) {
   return apiError("INTERNAL_ERROR", "Something went wrong.", 500);
 }
 
-/** Resolves the request's bearer token to its Grant. */
+/**
+ * Resolves the request's bearer token to its Grant. Accepts the token from an
+ * Authorization header (direct REST and MCP) or from the `sid` cookie the AXL
+ * engine wraps it in — see bearerFromRequest for why that is safe here.
+ */
 export async function grantFromRequest(request: Request) {
-  return authenticateBearer(bearerFromHeader(request.headers.get("authorization")));
+  return authenticateBearer(bearerFromRequest(request));
 }
 
 export async function readJson(request: Request): Promise<Record<string, unknown>> {

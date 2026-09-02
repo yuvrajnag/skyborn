@@ -83,6 +83,28 @@ export async function authenticateDevApp(clientId: string, clientSecret: string)
   return devApp;
 }
 
+/**
+ * Authenticates the app behind a refresh request.
+ *
+ * A confidential app proves itself with its client secret. A public one — every
+ * MCP client, running on someone's laptop with no secret it can keep — cannot,
+ * so RFC 6749 §6 makes the refresh token itself the credential. That is safe
+ * here because refresh tokens are single-use: rotation means a stolen one stops
+ * working the moment the legitimate holder refreshes, and the theft surfaces as
+ * the victim being logged out rather than going unnoticed.
+ */
+async function authenticateForRefresh(clientId: string, clientSecret: string | undefined) {
+  const devApp = await prisma.devApp.findUnique({ where: { clientId } });
+  if (!devApp) throw new GrantError("Bad client credentials.", "INVALID_CLIENT", 401);
+
+  if (devApp.isPublicClient) return devApp;
+
+  if (!clientSecret || !tokensMatch(clientSecret, devApp.clientSecretHash)) {
+    throw new GrantError("Bad client credentials.", "INVALID_CLIENT", 401);
+  }
+  return devApp;
+}
+
 // ---------------------------------------------------------------------------
 // Grant request → consent → approval
 // ---------------------------------------------------------------------------
@@ -281,10 +303,10 @@ export async function exchangeGrantForTokens(params: {
 
 export async function refreshTokens(params: {
   clientId: string;
-  clientSecret: string;
+  clientSecret?: string;
   refreshToken: string;
 }): Promise<IssuedTokens> {
-  const devApp = await authenticateDevApp(params.clientId, params.clientSecret);
+  const devApp = await authenticateForRefresh(params.clientId, params.clientSecret);
 
   const record = await prisma.accessToken.findUnique({
     where: { refreshTokenHash: hashToken(params.refreshToken) },
@@ -358,6 +380,37 @@ export function bearerFromHeader(header: string | null): string {
     throw new GrantError("Missing or malformed Authorization header.", "MISSING_TOKEN", 401);
   }
   return match[1].trim();
+}
+
+/** Access tokens minted by this service all carry this prefix. */
+const ACCESS_TOKEN_PREFIX = "sky_at_";
+
+/**
+ * Reads the agent's token from a request.
+ *
+ * Direct REST and MCP callers send `Authorization: Bearer <token>`. A call
+ * arriving through the AXL engine does not: AXL takes the client's bearer token
+ * and re-shapes it into `Cookie: sid=<token>` on the outbound call to us
+ * (packages/runtime/backend-adapter.js — its docs describe the header as
+ * forwarded "unchanged", but the code wraps it). So the cookie is a second
+ * accepted carrier for the same credential.
+ *
+ * Accepting a credential from a cookie is normally a CSRF risk. It is not one
+ * here, and deliberately so: Skyborn never sets a `sid` cookie on any browser
+ * response, so no browser ever holds one to send, and a third-party site cannot
+ * set a cookie on this domain. The value is additionally required to look like
+ * a token this service minted, so an arbitrary cookie cannot even reach the
+ * lookup.
+ */
+export function bearerFromRequest(request: Request): string {
+  const header = request.headers.get("authorization");
+  if (header) return bearerFromHeader(header);
+
+  const cookie = request.headers.get("cookie");
+  const sid = cookie?.match(/(?:^|;\s*)sid=([^;]+)/)?.[1]?.trim();
+  if (sid && sid.startsWith(ACCESS_TOKEN_PREFIX)) return sid;
+
+  throw new GrantError("Missing or malformed Authorization header.", "MISSING_TOKEN", 401);
 }
 
 export async function listGrantsForUser(userId: string) {

@@ -17,6 +17,7 @@
     "dev:grant": "tsx scripts/dev-grant.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@prisma/client": "^6.19.3",
     "bcryptjs": "^3.0.3",
     "next": "^15.5.25",

@@ -280,8 +280,16 @@ model DevApp {
   liveKeyId            String? @unique
   liveKeySecretHash    String?
 
-  grants           Grant[]
-  webhookEndpoints WebhookEndpoint[]
+  /// Redirect URIs, for apps registered through MCP's OAuth flow (RFC 7591).
+  redirectUris   String[] @default([])
+  /// True for a client that registered itself dynamically and holds no secret
+  /// it can keep — an MCP client running on someone's laptop. PKCE, not a
+  /// client secret, is what authenticates it.
+  isPublicClient Boolean  @default(false)
+
+  grants             Grant[]
+  webhookEndpoints   WebhookEndpoint[]
+  authorizationCodes OAuthAuthorizationCode[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -308,14 +316,43 @@ model Grant {
   issuedAt  DateTime?
   revokedAt DateTime?
 
-  accessTokens AccessToken[]
-  auditLogs    GrantAuditLog[]
+  accessTokens       AccessToken[]
+  auditLogs          GrantAuditLog[]
+  authorizationCodes OAuthAuthorizationCode[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([devAppId])
   @@index([agentId])
+}
+
+/// A single-use OAuth authorization code (RFC 6749 + PKCE, RFC 7636).
+///
+/// Issued when the human approves a Grant through the MCP consent screen, and
+/// redeemed once at the token endpoint. Codes are stored as hashes and marked
+/// used on redemption, so a replayed code buys nothing.
+model OAuthAuthorizationCode {
+  id       String @id @default(cuid())
+  codeHash String @unique
+
+  devAppId String
+  devApp   DevApp @relation(fields: [devAppId], references: [id], onDelete: Cascade)
+  grantId  String
+  grant    Grant  @relation(fields: [grantId], references: [id], onDelete: Cascade)
+
+  redirectUri         String
+  /// PKCE: the S256 challenge the client committed to up front.
+  codeChallenge       String
+  codeChallengeMethod String   @default("S256")
+  scopes              String[]
+
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([grantId])
 }
 
 model AccessToken {

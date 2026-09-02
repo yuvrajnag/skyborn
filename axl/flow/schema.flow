@@ -1,0 +1,77 @@
+-- Amounts are always integer paise carried as strings. A rupee figure large
+-- enough to matter loses precision as a JSON number, and fractional paise do
+-- not exist, so Number is the wrong type here on purpose.
+
+ENTITY Balance
+  walletId    : String
+  balancePaise : String
+  mode        : String
+
+ENTITY LedgerEntry
+  id           : String
+  amountPaise  : String
+  direction    : String
+  type         : String
+  counterparty : String
+  description  : String
+  createdAt    : String
+
+ENTITY TransferResult
+  entryId      : String
+  amountPaise  : String
+  toHandle     : String
+  balancePaise : String
+  replayed     : Boolean
+
+ENTITY TopupResult
+  entryId      : String
+  amountPaise  : String
+  balancePaise : String
+  replayed     : Boolean
+
+ENTITY RefundResult
+  entryIds     : List<String>
+  balancePaise : String
+  replayed     : Boolean
+
+ENTITY PayoutResult
+  payoutId     : String
+  entryId      : String
+  status       : String
+  balancePaise : String
+
+ENTITY Message
+  id        : String
+  direction : String
+  channel   : String
+  from      : String
+  to        : String
+  subject   : String
+  body      : String
+  createdAt : String
+
+ENTITY SendResult
+  messageId : String
+  channel   : String
+  status    : String
+  from      : String
+
+ENTITY OtpResult
+  found      : Boolean
+  code       : String
+  confidence : Float
+  channel    : String
+  from       : String
+  receivedAt : String
+
+ENTITY CallResult
+  callId : String
+  status : String
+  from   : String
+
+ENTITY CallStatus
+  callId     : String
+  status     : String
+  to         : String
+  transcript : String
+  createdAt  : String

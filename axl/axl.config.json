@@ -1,0 +1,6 @@
+{
+  "name": "skyborn",
+  "flowDir": "./flow",
+  "outDir": "./build",
+  "generatedDir": "./generated"
+}

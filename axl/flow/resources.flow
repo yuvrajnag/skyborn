@@ -1,0 +1,7 @@
+-- Read-only views. A RESOURCE takes no input and is served at
+-- GET /resources/:name, plus axl://resource/:name over MCP.
+
+RESOURCE wallet_balance
+  DESC "The handle's current wallet balance, in paise."
+  OUTPUT Balance
+  ENDPOINT GET /api/v1/wallet/balance

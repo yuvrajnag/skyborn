@@ -1,0 +1,563 @@
+{
+  "axl_version": "1.0",
+  "app": {
+    "name": "skyborn",
+    "displayName": "Skyborn for Devs",
+    "version": "1.0.0",
+    "description": "A verified human's agent acting on their behalf: money, email, SMS, calls and one-time codes, machine to machine.",
+    "framework": "",
+    "language": "",
+    "database": "",
+    "base_url": "http://localhost:3000",
+    "generators": [
+      "DIAGRAM"
+    ]
+  },
+  "entities": [
+    {
+      "name": "Balance",
+      "fields": [
+        {
+          "name": "walletId",
+          "type": "String"
+        },
+        {
+          "name": "balancePaise",
+          "type": "String"
+        },
+        {
+          "name": "mode",
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "LedgerEntry",
+      "fields": [
+        {
+          "name": "id",
+          "type": "String"
+        },
+        {
+          "name": "amountPaise",
+          "type": "String"
+        },
+        {
+          "name": "direction",
+          "type": "String"
+        },
+        {
+          "name": "type",
+          "type": "String"
+        },
+        {
+          "name": "counterparty",
+          "type": "String"
+        },
+        {
+          "name": "description",
+          "type": "String"
+        },
+        {
+          "name": "createdAt",
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "TransferResult",
+      "fields": [
+        {
+          "name": "entryId",
+          "type": "String"
+        },
+        {
+          "name": "amountPaise",
+          "type": "String"
+        },
+        {
+          "name": "toHandle",
+          "type": "String"
+        },
+        {
+          "name": "balancePaise",
+          "type": "String"
+        },
+        {
+          "name": "replayed",
+          "type": "Boolean"
+        }
+      ]
+    },
+    {
+      "name": "TopupResult",
+      "fields": [
+        {
+          "name": "entryId",
+          "type": "String"
+        },
+        {
+          "name": "amountPaise",
+          "type": "String"
+        },
+        {
+          "name": "balancePaise",
+          "type": "String"
+        },
+        {
+          "name": "replayed",
+          "type": "Boolean"
+        }
+      ]
+    },
+    {
+      "name": "RefundResult",
+      "fields": [
+        {
+          "name": "entryIds",
+          "type": "List<String>"
+        },
+        {
+          "name": "balancePaise",
+          "type": "String"
+        },
+        {
+          "name": "replayed",
+          "type": "Boolean"
+        }
+      ]
+    },
+    {
+      "name": "PayoutResult",
+      "fields": [
+        {
+          "name": "payoutId",
+          "type": "String"
+        },
+        {
+          "name": "entryId",
+          "type": "String"
+        },
+        {
+          "name": "status",
+          "type": "String"
+        },
+        {
+          "name": "balancePaise",
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "Message",
+      "fields": [
+        {
+          "name": "id",
+          "type": "String"
+        },
+        {
+          "name": "direction",
+          "type": "String"
+        },
+        {
+          "name": "channel",
+          "type": "String"
+        },
+        {
+          "name": "from",
+          "type": "String"
+        },
+        {
+          "name": "to",
+          "type": "String"
+        },
+        {
+          "name": "subject",
+          "type": "String"
+        },
+        {
+          "name": "body",
+          "type": "String"
+        },
+        {
+          "name": "createdAt",
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "SendResult",
+      "fields": [
+        {
+          "name": "messageId",
+          "type": "String"
+        },
+        {
+          "name": "channel",
+          "type": "String"
+        },
+        {
+          "name": "status",
+          "type": "String"
+        },
+        {
+          "name": "from",
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "OtpResult",
+      "fields": [
+        {
+          "name": "found",
+          "type": "Boolean"
+        },
+        {
+          "name": "code",
+          "type": "String"
+        },
+        {
+          "name": "confidence",
+          "type": "Float"
+        },
+        {
+          "name": "channel",
+          "type": "String"
+        },
+        {
+          "name": "from",
+          "type": "String"
+        },
+        {
+          "name": "receivedAt",
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "CallResult",
+      "fields": [
+        {
+          "name": "callId",
+          "type": "String"
+        },
+        {
+          "name": "status",
+          "type": "String"
+        },
+        {
+          "name": "from",
+          "type": "String"
+        }
+      ]
+    },
+    {
+      "name": "CallStatus",
+      "fields": [
+        {
+          "name": "callId",
+          "type": "String"
+        },
+        {
+          "name": "status",
+          "type": "String"
+        },
+        {
+          "name": "to",
+          "type": "String"
+        },
+        {
+          "name": "transcript",
+          "type": "String"
+        },
+        {
+          "name": "createdAt",
+          "type": "String"
+        }
+      ]
+    }
+  ],
+  "actions": {
+    "wallet_transactions": {
+      "description": "List recent ledger entries for the handle's wallet, newest first.",
+      "input": {
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "How many entries to return, up to 200. Defaults to 50."
+        }
+      },
+      "output": "List<LedgerEntry>",
+      "endpoint": {
+        "method": "GET",
+        "path": "/api/v1/wallet/transactions"
+      },
+      "permission": "AUTH",
+      "confirm": null
+    },
+    "wallet_topup": {
+      "description": "Pull funds into the wallet from the standing funding mandate. No card entry and no OTP — the human authorized this once, in advance.",
+      "input": {
+        "amount_paise": {
+          "type": "string",
+          "required": true,
+          "description": "Amount in paise as a string. ₹1 is \"100\". Must be at or below the mandate's per-pull cap of ₹15,000; call this more than once for a larger total."
+        }
+      },
+      "output": "TopupResult",
+      "endpoint": {
+        "method": "POST",
+        "path": "/api/v1/wallet/topup"
+      },
+      "permission": "AUTH",
+      "confirm": null,
+      "event": "WalletToppedUp",
+      "effects": "Debits the human's bank account through the mandate they registered."
+    },
+    "wallet_transfer": {
+      "description": "Send money to another Skyborn handle. Internal double-entry transfer — instant, free, and never near a card network.",
+      "input": {
+        "to_handle": {
+          "type": "string",
+          "required": true,
+          "description": "The recipient handle's email address, or its agent id."
+        },
+        "amount_paise": {
+          "type": "string",
+          "required": true,
+          "description": "Amount in paise as a string. ₹1 is \"100\"."
+        },
+        "description": {
+          "type": "string",
+          "required": false,
+          "description": "Note stored on both ledger entries."
+        }
+      },
+      "output": "TransferResult",
+      "endpoint": {
+        "method": "POST",
+        "path": "/api/v1/wallet/transfer"
+      },
+      "permission": "AUTH",
+      "confirm": null,
+      "event": "MoneyTransferred",
+      "irreversible": false,
+      "effects": "Moves money out of this wallet immediately and counts against the grant's spending cap.",
+      "side_effects": "Reversible through wallet_refund, but only while the recipient still holds the funds."
+    },
+    "wallet_refund": {
+      "description": "Reverse a prior transfer or top-up. Writes new refund entries; the original is never altered.",
+      "input": {
+        "original_entry_id": {
+          "type": "string",
+          "required": true,
+          "description": "The ledger entry id being reversed, from wallet_transactions."
+        },
+        "reason": {
+          "type": "string",
+          "required": false,
+          "description": "Note stored on the refund entries."
+        }
+      },
+      "output": "RefundResult",
+      "endpoint": {
+        "method": "POST",
+        "path": "/api/v1/wallet/refund"
+      },
+      "permission": "AUTH",
+      "confirm": null,
+      "side_effects": "Internal reversals are instant. A card-network refund follows the network's own 3-7 business day timeline, which Skyborn cannot shorten."
+    },
+    "wallet_payout": {
+      "description": "Withdraw from the wallet to an external bank account or UPI handle.",
+      "input": {
+        "amount_paise": {
+          "type": "string",
+          "required": true,
+          "description": "Amount in paise as a string. ₹1 is \"100\"."
+        },
+        "destination": {
+          "type": "string",
+          "required": true,
+          "description": "UPI VPA or bank account reference to pay out to."
+        }
+      },
+      "output": "PayoutResult",
+      "endpoint": {
+        "method": "POST",
+        "path": "/api/v1/wallet/payout"
+      },
+      "permission": "AUTH",
+      "confirm": null,
+      "event": "PayoutCreated",
+      "irreversible": true,
+      "effects": "Sends money outside Skyborn and counts against the grant's spending cap.",
+      "side_effects": "Once settled at the receiving bank this cannot be reversed from here."
+    },
+    "messages_send": {
+      "description": "Send an email or SMS from the handle's own address or number.",
+      "input": {
+        "channel": {
+          "type": "string",
+          "required": true,
+          "description": "Either \"email\" or \"sms\"."
+        },
+        "to": {
+          "type": "string",
+          "required": true,
+          "description": "Recipient email address, or phone number in E.164 form."
+        },
+        "subject": {
+          "type": "string",
+          "required": false,
+          "description": "Email subject line. Ignored for SMS."
+        },
+        "body": {
+          "type": "string",
+          "required": true,
+          "description": "The message body."
+        }
+      },
+      "output": "SendResult",
+      "endpoint": {
+        "method": "POST",
+        "path": "/api/v1/messages/send"
+      },
+      "permission": "AUTH",
+      "confirm": null,
+      "event": "MessageSent",
+      "irreversible": true,
+      "effects": "Delivers a message to a third party. It cannot be unsent."
+    },
+    "messages_read": {
+      "description": "Read the handle's messages, newest first.",
+      "input": {
+        "channel": {
+          "type": "string",
+          "required": false,
+          "description": "Restrict to one channel: email, sms or call."
+        },
+        "limit": {
+          "type": "number",
+          "required": false,
+          "description": "How many messages to return, up to 200. Defaults to 50."
+        }
+      },
+      "output": "List<Message>",
+      "endpoint": {
+        "method": "GET",
+        "path": "/api/v1/messages/read"
+      },
+      "permission": "AUTH",
+      "confirm": null
+    },
+    "messages_otp_latest": {
+      "description": "Return the most recent one-time code sent to the handle. Only inbound messages are searched, and only recent ones — a stale code would be rejected by whatever asked for it.",
+      "input": {
+        "channel": {
+          "type": "string",
+          "required": false,
+          "description": "Restrict to one channel: email or sms."
+        },
+        "from": {
+          "type": "string",
+          "required": false,
+          "description": "Only consider messages whose sender matches this."
+        },
+        "within_minutes": {
+          "type": "number",
+          "required": false,
+          "description": "How far back to look. Defaults to 15."
+        }
+      },
+      "output": "OtpResult",
+      "endpoint": {
+        "method": "GET",
+        "path": "/api/v1/messages/otp/latest"
+      },
+      "permission": "AUTH",
+      "confirm": null
+    },
+    "calls_make": {
+      "description": "Place a voice call from the handle's number.",
+      "input": {
+        "to": {
+          "type": "string",
+          "required": true,
+          "description": "Phone number to call, in E.164 form."
+        },
+        "script": {
+          "type": "string",
+          "required": true,
+          "description": "What the agent should say on the call."
+        }
+      },
+      "output": "CallResult",
+      "endpoint": {
+        "method": "POST",
+        "path": "/api/v1/calls"
+      },
+      "permission": "AUTH",
+      "confirm": null,
+      "event": "CallPlaced",
+      "irreversible": true,
+      "effects": "Places a real phone call to a third party."
+    },
+    "calls_status": {
+      "description": "Check the status and transcript of a call this handle placed.",
+      "input": {
+        "call_id": {
+          "type": "string",
+          "required": true,
+          "description": "The id returned by calls_make."
+        }
+      },
+      "output": "CallStatus",
+      "endpoint": {
+        "method": "GET",
+        "path": "/api/v1/calls/status"
+      },
+      "permission": "AUTH",
+      "confirm": null
+    }
+  },
+  "resources": {
+    "wallet_balance": {
+      "description": "The handle's current wallet balance, in paise.",
+      "output": "Balance",
+      "endpoint": {
+        "method": "GET",
+        "path": "/api/v1/wallet/balance"
+      },
+      "permission": "AUTH"
+    }
+  },
+  "workflows": [],
+  "permissions": {
+    "wallet_balance": "AUTH",
+    "wallet_transactions": "AUTH",
+    "wallet_topup": "AUTH",
+    "wallet_transfer": "AUTH",
+    "wallet_refund": "AUTH",
+    "wallet_payout": "AUTH",
+    "messages_send": "AUTH",
+    "messages_read": "AUTH",
+    "messages_otp_latest": "AUTH",
+    "calls_make": "AUTH",
+    "calls_status": "AUTH"
+  },
+  "rateLimits": {
+    "wallet_balance": "60/min",
+    "wallet_transactions": "60/min",
+    "wallet_topup": "10/min",
+    "wallet_transfer": "20/min",
+    "wallet_refund": "10/min",
+    "wallet_payout": "5/min",
+    "messages_send": "30/min",
+    "messages_read": "60/min",
+    "messages_otp_latest": "30/min",
+    "calls_make": "5/min",
+    "calls_status": "60/min"
+  }
+}

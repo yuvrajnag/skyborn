@@ -1,0 +1,51 @@
+-- Every action requires a session, meaning an Authorization header must be
+-- present. AXL does not validate it — it forwards it to Skyborn, which resolves
+-- it to a Grant and applies the real scope and spending-cap checks.
+--
+-- Nothing here is PUBLIC. A PUBLIC action would be an unauthenticated proxy
+-- straight through to a wallet.
+--
+-- ROLE and OWNER are deliberately unused: they only work behind a gateway
+-- started with --trust-identity-headers that overwrites X-AXL-Subject on every
+-- request, and a gate that looks real but reads a client-supplied header is
+-- worse than no gate at all.
+
+PERMISSION wallet_balance       : AUTH
+PERMISSION wallet_transactions  : AUTH
+PERMISSION wallet_topup         : AUTH
+PERMISSION wallet_transfer      : AUTH
+PERMISSION wallet_refund        : AUTH
+PERMISSION wallet_payout        : AUTH
+PERMISSION messages_send        : AUTH
+PERMISSION messages_read        : AUTH
+PERMISSION messages_otp_latest  : AUTH
+PERMISSION calls_make           : AUTH
+PERMISSION calls_status         : AUTH
+
+-- Rate limits are a blast-radius control, not an authorization check. They are
+-- tightest on the actions that move money or reach a third party.
+RATE_LIMIT wallet_balance       : 60/min
+RATE_LIMIT wallet_transactions  : 60/min
+RATE_LIMIT wallet_topup         : 10/min
+RATE_LIMIT wallet_transfer      : 20/min
+RATE_LIMIT wallet_refund        : 10/min
+RATE_LIMIT wallet_payout        : 5/min
+RATE_LIMIT messages_send        : 30/min
+RATE_LIMIT messages_read        : 60/min
+RATE_LIMIT messages_otp_latest  : 30/min
+RATE_LIMIT calls_make           : 5/min
+RATE_LIMIT calls_status         : 60/min
+
+-- Deliberately no CONFIRM on any action.
+--
+-- AXL's only confirmation gate is `CONFIRM <action> : OTP`, which holds the
+-- call until a second request supplies a one-time code. The engine never
+-- returns that code in an API response and has no channel of its own to send
+-- it, so satisfying the gate means a human reads it somewhere and types it
+-- back — which is precisely the involvement Skyborn exists to remove (spec
+-- Section 2: no OTP at call time, ever).
+--
+-- The control that replaces it is stronger and sits in the right place: the
+-- spending cap the human set when approving the Grant, enforced server-side in
+-- Skyborn on every money-out call, plus the audit log and one-tap revoke
+-- (Section 15). A gate here would trade a real limit for a prompt.
