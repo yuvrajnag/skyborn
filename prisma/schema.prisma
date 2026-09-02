@@ -47,6 +47,13 @@ enum LedgerEntryType {
   manual_credit
 }
 
+enum PayoutStatus {
+  pending
+  processing
+  settled
+  failed
+}
+
 enum MandateStatus {
   pending
   active
@@ -165,6 +172,7 @@ model Wallet {
 
   ledgerEntries LedgerEntry[]
   mandates      FundingMandate[]
+  payouts       Payout[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -217,11 +225,40 @@ model LedgerEntry {
   /// Both legs of an internal transfer share one transferGroupId.
   transferGroupId String?
 
+  /// Caller-supplied key making a money-moving call safe to retry. Unique
+  /// across the whole table, so a replayed request returns the original entry
+  /// instead of moving money twice.
+  idempotencyKey String? @unique
+
   createdAt DateTime @default(now())
 
   @@index([walletId, createdAt])
   @@index([transferGroupId])
   @@index([originalEntryId])
+}
+
+/// A withdrawal to an external bank account or UPI handle. Live mode goes
+/// through RazorpayX and is KYC-gated; sandbox settles instantly against a
+/// simulated provider using the same API shape.
+model Payout {
+  id       String @id @default(cuid())
+  walletId String
+  wallet   Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  amount      BigInt
+  /// UPI VPA or masked bank account — never a full account number in the clear.
+  destination String
+  status      PayoutStatus @default(pending)
+  providerRef String?
+  failureCode String?
+
+  /// The debit this payout is settling.
+  ledgerEntryId String? @unique
+
+  createdAt DateTime  @default(now())
+  settledAt DateTime?
+
+  @@index([walletId, createdAt])
 }
 
 // ---------------------------------------------------------------------------
