@@ -1,0 +1,372 @@
+// Skyborn — Prisma schema.
+//
+// The full Section 7 data model is declared here from day one, including the
+// tables later phases fill in (Grant, AccessToken, Message, webhooks). Phase 1
+// only writes to User / Agent / Handle / Wallet / LedgerEntry, but the shape
+// the later phases need is already fixed so nothing has to be reshaped later.
+//
+// Money is stored in *paise* (integer minor units) everywhere. Never floats.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// sandbox | live — carried by every Handle, Wallet and Grant from day one
+/// (Section 14), never bolted on later.
+enum Mode {
+  sandbox
+  live
+}
+
+enum KycStatus {
+  unverified
+  pending
+  verified
+  rejected
+}
+
+enum LedgerDirection {
+  credit
+  debit
+}
+
+enum LedgerEntryType {
+  topup
+  withdrawal
+  transfer_in
+  transfer_out
+  refund_in
+  refund_out
+  virtual_card_charge
+  /// Phase 1 only: manual sandbox credit, before Razorpay/custody partner exist.
+  manual_credit
+}
+
+enum MandateStatus {
+  pending
+  active
+  paused
+  revoked
+}
+
+enum GrantStatus {
+  pending
+  active
+  revoked
+}
+
+enum GrantIssuedVia {
+  rest
+  mcp
+  axl
+}
+
+enum MessageDirection {
+  in
+  out
+}
+
+enum MessageChannel {
+  email
+  sms
+  call
+}
+
+// ---------------------------------------------------------------------------
+// Mode A — humans
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String  @id @default(cuid())
+  email        String  @unique
+  name         String?
+  passwordHash String
+
+  /// KYC (Section 4). We store the vendor's verdict and reference only —
+  /// the raw Aadhaar number / SSN never touches this database.
+  kycStatus     KycStatus @default(unverified)
+  kycVendor     String?
+  kycVendorRef  String?
+  /// Masked tail (e.g. "1234") purely so the UI has something to show.
+  kycMaskedTail String?
+  kycVerifiedAt DateTime?
+
+  agents  Agent[]
+  devApps DevApp[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Agent {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name String
+  /// URL-safe slug, unique per owner — used to build the Handle's address.
+  slug String
+
+  handle Handle?
+  wallet Wallet?
+
+  grants   Grant[]
+  messages Message[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, slug])
+  @@index([userId])
+}
+
+/// 1:1 with Agent — the bundle an agent gets at birth: one email, one phone.
+/// Phase 1 provisions these internally (no Postmark/Twilio yet); Phase 3
+/// swaps in real addresses without changing this shape.
+model Handle {
+  id      String @id @default(cuid())
+  agentId String @unique
+  agent   Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  email String @unique
+  phone String @unique
+  mode  Mode   @default(sandbox)
+
+  /// False until Phase 3 backs these with a real Postmark address and a real
+  /// Twilio number. The UI must not claim an internal address can receive mail.
+  provisioned      Boolean @default(false)
+  /// Provider identifiers, filled in from Phase 3 onwards.
+  emailProviderRef String?
+  phoneProviderRef String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Wallet {
+  id      String @id @default(cuid())
+  agentId String @unique
+  agent   Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  /// Cached balance in paise. Authoritative value is the sum of ledgerEntries;
+  /// both are written in the same transaction and reconciled by
+  /// recomputeBalance() in the core service layer.
+  balance BigInt @default(0)
+  mode    Mode   @default(sandbox)
+
+  /// The nodal-account record at the BaaS/custody partner (Section 5).
+  /// Null until Phase 10 — Skyborn never self-issues.
+  custodyPartnerRef String?
+
+  ledgerEntries LedgerEntry[]
+  mandates      FundingMandate[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// Human-approved standing authorization (UPI Autopay / e-mandate).
+/// capAmount defaults to ₹15,000 — above that RBI's e-mandate framework
+/// requires OTP again, which would break the zero-touch guarantee (Section 11).
+model FundingMandate {
+  id       String @id @default(cuid())
+  walletId String
+  wallet   Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  providerRef String?
+  /// Paise. 1_500_000 paise = ₹15,000.
+  capAmount   BigInt        @default(1500000)
+  /// e.g. "per_transaction", "monthly"
+  capPeriod   String        @default("per_transaction")
+  status      MandateStatus @default(pending)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([walletId])
+}
+
+/// Append-only. Rows are never updated or deleted — a reversal is a new
+/// refund_in / refund_out row pointing back via originalEntryId.
+model LedgerEntry {
+  id       String @id @default(cuid())
+  walletId String
+  wallet   Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  /// Paise, always positive. Sign lives in `direction`.
+  amount    BigInt
+  direction LedgerDirection
+  type      LedgerEntryType
+
+  /// Free-form label for the other side (a Handle's email, a bank ref, a merchant).
+  counterparty String?
+  /// Provider-side identifier (Razorpay payment id, payout id, ...).
+  externalRef  String?
+  description  String?
+
+  /// Set on refund rows, pointing at the entry being reversed.
+  originalEntryId String?
+  originalEntry   LedgerEntry?  @relation("EntryReversals", fields: [originalEntryId], references: [id])
+  reversals       LedgerEntry[] @relation("EntryReversals")
+
+  /// Both legs of an internal transfer share one transferGroupId.
+  transferGroupId String?
+
+  createdAt DateTime @default(now())
+
+  @@index([walletId, createdAt])
+  @@index([transferGroupId])
+  @@index([originalEntryId])
+}
+
+// ---------------------------------------------------------------------------
+// Mode B — Skyborn for Devs (tables declared now, populated from Phase 4)
+// ---------------------------------------------------------------------------
+
+model DevApp {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name String
+
+  clientId             String  @unique
+  /// Hashed, never stored in plaintext.
+  clientSecretHash     String
+  sandboxKeyId         String  @unique
+  sandboxKeySecretHash String
+  liveKeyId            String? @unique
+  liveKeySecretHash    String?
+
+  grants           Grant[]
+  webhookEndpoints WebhookEndpoint[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+/// Links a DevApp to one Handle. Revocable at any time from the dashboard,
+/// regardless of which adapter (rest | mcp | axl) issued it.
+model Grant {
+  id       String @id @default(cuid())
+  devAppId String
+  devApp   DevApp @relation(fields: [devAppId], references: [id], onDelete: Cascade)
+  agentId  String
+  agent    Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  scopes      String[]
+  /// Paise. Enforced server-side on every money-out call (Section 15).
+  spendingCap BigInt?
+  mode        Mode           @default(sandbox)
+  status      GrantStatus    @default(pending)
+  issuedVia   GrantIssuedVia @default(rest)
+
+  issuedAt  DateTime?
+  revokedAt DateTime?
+
+  accessTokens AccessToken[]
+  auditLogs    GrantAuditLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([devAppId])
+  @@index([agentId])
+}
+
+model AccessToken {
+  id      String @id @default(cuid())
+  grantId String
+  grant   Grant  @relation(fields: [grantId], references: [id], onDelete: Cascade)
+
+  /// Hashes only — the raw JWT and refresh token are returned once and never stored.
+  tokenHash        String    @unique
+  refreshTokenHash String?   @unique
+  expiresAt        DateTime
+  refreshExpiresAt DateTime?
+  revokedAt        DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([grantId])
+}
+
+/// Every autonomous action, visible in the human's dashboard even though
+/// nothing was approved in the moment (Section 15).
+model GrantAuditLog {
+  id      String @id @default(cuid())
+  grantId String
+  grant   Grant  @relation(fields: [grantId], references: [id], onDelete: Cascade)
+
+  action        String
+  paramsSummary Json?
+  resultStatus  String
+  errorCode     String?
+
+  createdAt DateTime @default(now())
+
+  @@index([grantId, createdAt])
+}
+
+model Message {
+  id      String @id @default(cuid())
+  agentId String
+  agent   Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  direction   MessageDirection
+  channel     MessageChannel
+  from        String
+  to          String
+  subject     String?
+  /// Email/SMS body, or the call transcript.
+  body        String?
+  status      String           @default("queued")
+  providerRef String?
+
+  createdAt DateTime @default(now())
+
+  @@index([agentId, createdAt])
+}
+
+model WebhookEndpoint {
+  id       String @id @default(cuid())
+  devAppId String
+  devApp   DevApp @relation(fields: [devAppId], references: [id], onDelete: Cascade)
+
+  url    String
+  secret String
+  events String[]
+  active Boolean  @default(true)
+
+  deliveries WebhookDelivery[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([devAppId])
+}
+
+model WebhookDelivery {
+  id         String          @id @default(cuid())
+  endpointId String
+  endpoint   WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  event         String
+  payload       Json
+  attempts      Int       @default(0)
+  status        String    @default("pending")
+  responseCode  Int?
+  lastAttemptAt DateTime?
+  nextAttemptAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([endpointId, createdAt])
+}

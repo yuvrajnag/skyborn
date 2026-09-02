@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+/*
+ * Skyborn is dark-only and strictly monochrome: black grounds, grey surfaces
+ * and lines, white and grey text. There is no light theme and no colour accent
+ * — emphasis comes from contrast (an inverted white button) and from weight,
+ * never from hue. Status is carried by a word plus a grey dot, never by colour
+ * alone, so it survives being read in greyscale.
+ */
+
+@theme {
+  /* Grounds, darkest to lightest */
+  --color-ink: #000000;
+  --color-ink-raised: #0b0b0b;
+  --color-surface: #131313;
+  --color-surface-hi: #1b1b1b;
+
+  /* Lines */
+  --color-line: #262626;
+  --color-line-hi: #3a3a3a;
+
+  /* Text */
+  --color-text: #f5f5f5;
+  --color-text-dim: #a3a3a3;
+  --color-text-faint: #6b6b6b;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background-color: var(--color-ink);
+  color: var(--color-text);
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Form controls: grey fields on black, white text, white focus ring. */
+input,
+textarea,
+select {
+  color-scheme: dark;
+}
+
+::selection {
+  background: var(--color-text);
+  color: var(--color-ink);
+}
+
+::placeholder {
+  color: var(--color-text-faint);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-text);
+  outline-offset: 2px;
+}
+
+/* Thin grey scrollbars so they read as part of the surface, not the content. */
+* {
+  scrollbar-color: var(--color-line-hi) transparent;
+  scrollbar-width: thin;
+}
