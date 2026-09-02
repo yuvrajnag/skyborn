@@ -13,7 +13,8 @@
     "db:studio": "prisma studio",
     "db:seed": "prisma db seed",
     "postinstall": "prisma generate",
-    "test": "tsx --test --test-concurrency=1 tests/*.test.ts"
+    "test": "tsx --test --test-concurrency=1 tests/*.test.ts",
+    "dev:grant": "tsx scripts/dev-grant.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
