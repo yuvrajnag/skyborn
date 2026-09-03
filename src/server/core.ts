@@ -11,6 +11,7 @@ import {
   sendEmail as sendEmailRaw,
   sendSms as sendSmsRaw,
 } from "@/server/messaging";
+import { emitEvent, type WebhookEvent } from "@/server/webhooks";
 import {
   createPayout,
   getBalance,
@@ -106,6 +107,14 @@ async function enforceSpendingCap(grant: AuthenticatedGrant, amountPaise: bigint
  * Runs an action with scope, cap and audit handling around it. Every public
  * function below goes through this — there is no path that skips the audit log.
  */
+/** Actions whose success is worth telling a developer's backend about. */
+const WEBHOOK_FOR_ACTION: Record<string, WebhookEvent> = {
+  "wallet.transfer": "wallet.transfer",
+  "wallet.topup": "wallet.topup",
+  "wallet.payout": "wallet.payout",
+  "wallet.refund": "wallet.refund",
+};
+
 async function withAudit<T>(
   ctx: CoreContext,
   action: string,
@@ -133,6 +142,17 @@ async function withAudit<T>(
         resultStatus: "ok",
       },
     });
+
+    // Emitted here rather than inside each action, so a new money-moving action
+    // cannot be added and quietly skip its webhook.
+    const event = WEBHOOK_FOR_ACTION[action];
+    if (event) {
+      await emitEvent({
+        agentId: ctx.grant.agentId,
+        event,
+        data: { grant_id: ctx.grant.id, action, ...paramsSummary, result },
+      });
+    }
 
     return result;
   } catch (error) {

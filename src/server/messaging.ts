@@ -8,6 +8,7 @@ import { prisma } from "@/lib/prisma";
 import { extractOtp, type OtpCandidate } from "@/server/otp";
 import { emailProvider, phoneProvider } from "@/server/providers/messaging";
 import { slugifyAgentName } from "@/server/handles";
+import { emitEvent } from "@/server/webhooks";
 
 /**
  * The handle's email, SMS and voice (spec Section 12, Phase 3).
@@ -151,6 +152,12 @@ export async function makeCall(params: { agentId: string; to: string; script: st
  * Records an inbound message. Called by the provider webhooks, and directly by
  * tests and the sandbox simulator.
  */
+/**
+ * Records an inbound message and tells any subscribed developer backend.
+ *
+ * This is the event that makes an agent responsive rather than polling: a
+ * one-time code arriving is the thing it is usually waiting for.
+ */
 export async function recordInboundMessage(params: {
   agentId: string;
   channel: MessageChannel;
@@ -161,7 +168,7 @@ export async function recordInboundMessage(params: {
   providerRef?: string;
   receivedAt?: Date;
 }) {
-  return prisma.message.create({
+  const message = await prisma.message.create({
     data: {
       agentId: params.agentId,
       direction: MessageDirection.in,
@@ -175,6 +182,22 @@ export async function recordInboundMessage(params: {
       ...(params.receivedAt ? { createdAt: params.receivedAt } : {}),
     },
   });
+
+  // The message body is deliberately not in the event: a one-time code should
+  // be fetched over an authenticated call, not pushed to whatever URL an app
+  // registered.
+  await emitEvent({
+    agentId: params.agentId,
+    event: "message.received",
+    data: {
+      message_id: message.id,
+      channel: message.channel,
+      from: message.from,
+      received_at: message.createdAt.toISOString(),
+    },
+  });
+
+  return message;
 }
 
 export async function readInbox(params: {

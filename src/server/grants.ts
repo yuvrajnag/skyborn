@@ -2,6 +2,7 @@ import { GrantIssuedVia, GrantStatus, Mode, Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
 import { type Scope, parseScopes } from "@/lib/scopes";
+import { emitEvent } from "@/server/webhooks";
 import {
   ACCESS_TOKEN_TTL_SECONDS,
   REFRESH_TOKEN_TTL_SECONDS,
@@ -185,10 +186,26 @@ export async function approveGrant(params: { grantId: string; approvingUserId: s
   }
   if (grant.status === GrantStatus.active) return grant;
 
-  return prisma.grant.update({
+  const approved = await prisma.grant.update({
     where: { id: grant.id },
     data: { status: GrantStatus.active, issuedAt: new Date() },
   });
+
+  // Step 4 of Section 10: the developer's backend hears about this rather than
+  // polling for it.
+  await emitEvent({
+    agentId: approved.agentId,
+    event: "grant.approved",
+    data: {
+      grant_id: approved.id,
+      agent_id: approved.agentId,
+      scopes: approved.scopes,
+      spending_cap_paise: approved.spendingCap?.toString() ?? null,
+      mode: approved.mode,
+    },
+  });
+
+  return approved;
 }
 
 export async function denyGrant(params: { grantId: string; approvingUserId: string }) {
@@ -220,6 +237,15 @@ export async function revokeGrantById(grantId: string) {
       data: { status: GrantStatus.revoked, revokedAt: new Date() },
     }),
   ]);
+
+  // Emitted after the transaction commits: the access is already gone, so a
+  // slow receiver cannot hold a revocation open.
+  await emitEvent({
+    agentId: grant.agentId,
+    event: "grant.revoked",
+    data: { grant_id: grant.id, agent_id: grant.agentId },
+  });
+
   return grant;
 }
 
