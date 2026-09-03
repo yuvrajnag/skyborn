@@ -8,7 +8,16 @@
 
 import { randomBytes, createHash } from "node:crypto";
 
-import { GrantStatus, LedgerDirection, LedgerEntryType, Mode, PrismaClient } from "@prisma/client";
+import {
+  GrantStatus,
+  LedgerDirection,
+  LedgerEntryType,
+  MandateStatus,
+  MessageChannel,
+  MessageDirection,
+  Mode,
+  PrismaClient,
+} from "@prisma/client";
 import bcrypt from "bcryptjs";
 
 import {
@@ -121,6 +130,45 @@ async function main() {
       sandboxKeySecretHash: sha256(sandboxKeySecret),
     },
   });
+
+  // A funding mandate on one wallet, so wallet.topup has something to pull
+  // against. Capped at ₹15,000 — above that RBI's e-mandate rules require OTP
+  // on every pull, which would break the zero-touch guarantee.
+  if (groceries.wallet) {
+    const existingMandate = await prisma.fundingMandate.findFirst({
+      where: { walletId: groceries.wallet.id },
+    });
+    if (!existingMandate) {
+      await prisma.fundingMandate.create({
+        data: {
+          walletId: groceries.wallet.id,
+          providerRef: "sim_mandate_seeded",
+          capAmount: 1_500_000n,
+          capPeriod: "per_transaction",
+          status: MandateStatus.active,
+        },
+      });
+    }
+  }
+
+  // An inbound message carrying a one-time code, so messages.otp_latest has
+  // something real to parse.
+  const existingMessage = await prisma.message.findFirst({
+    where: { agentId: travel.id, direction: MessageDirection.in },
+  });
+  if (!existingMessage && travel.handle) {
+    await prisma.message.create({
+      data: {
+        agentId: travel.id,
+        direction: MessageDirection.in,
+        channel: MessageChannel.sms,
+        from: "VM-AIRLN",
+        to: travel.handle.phone,
+        body: "552104 is your verification code for your booking of Rs 8,499. Valid for 10 minutes.",
+        status: "received",
+      },
+    });
+  }
 
   const existingGrant = await prisma.grant.findFirst({
     where: { devAppId: devApp.id, agentId: ops.id },

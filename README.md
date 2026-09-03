@@ -4,8 +4,8 @@ A human verifies their identity once and funds a wallet once. After that their
 agent operates on its own — money, email, SMS, calls, one-time codes — over
 REST, MCP or AXL, with no further human involvement short of revoking access.
 
-**This repository is currently at Phase 1 of the build plan.** What that means
-concretely is in [Status](#status) below. Nothing here moves real money.
+**Sandbox only. No real money moves in this build.** What is and is not real is
+spelled out in [Status](#status).
 
 ---
 
@@ -15,132 +15,200 @@ Requirements: Node 20+ and PostgreSQL 14+.
 
 ```bash
 npm install
-cp .env.example .env          # then fill in DATABASE_URL, NEXTAUTH_SECRET, JWT_SECRET
-npm run db:migrate            # creates the schema
-npm run db:seed               # sample users, agents and a DevApp
+cp .env.example .env          # fill in DATABASE_URL, NEXTAUTH_SECRET, JWT_SECRET
+npm run db:migrate
+npm run db:seed
 npm run dev                   # http://localhost:3000
 ```
 
 Seeded logins — `ada@example.com` or `dev@example.com`, password
 `skyborn-sandbox`.
 
-Useful scripts:
+To exercise the agent-facing surface without clicking through consent by hand:
+
+```bash
+npm run dev:grant             # prints a working access token and a curl to try
+```
 
 | Script | What it does |
 | --- | --- |
 | `npm run dev` | Next dev server |
 | `npm run build` | `prisma generate` then a production build |
+| `npm test` | The full suite (147 tests) |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint |
-| `npm run db:migrate` | Create and apply a migration |
-| `npm run db:deploy` | Apply existing migrations (deployments) |
-| `npm run db:seed` | Idempotent sample data |
-| `npm run db:studio` | Prisma Studio |
+| `npm run db:migrate` / `db:deploy` / `db:seed` / `db:studio` | Prisma |
+| `npm run dev:grant` | Mint a sandbox agent token locally |
 
 ## Status
 
+Every phase in the build plan is implemented. What differs between them is
+whether a **real third party** is connected — and where one is not, the code
+refuses rather than pretending.
+
 | Phase | | |
 | --- | --- | --- |
-| 1 | Skeleton — accounts, agent birth, sandbox wallet | **built** |
-| 2 | Real wallet, sandbox money (Razorpay test mode, transfer/refund/payout) | not started |
-| 3 | Real identity — Postmark and Twilio on the handle, OTP parser | not started |
-| 4 | Auth API — DevApps, Grants, consent, tokens | not started |
-| 5 | Core service layer | not started |
-| 6 | AXL runtime integration | not started |
-| 7 | MCP server | not started |
-| 8 | Dev dashboard and grant management | not started |
-| 9 | Real identity verification (KYC vendor) | not started |
-| 10 | Live mode | not started |
-| 11 | Virtual card issuance (stretch) | not started |
+| 1 | Skeleton — accounts, agent birth, sandbox wallet | built |
+| 2 | Wallet — mandate, top-up, transfer, refund, payout | built, simulated custody |
+| 3 | Handle — email, SMS, voice, OTP retrieval | built, simulated providers |
+| 4 | Auth API — DevApps, grants, consent, tokens | built |
+| 5 | Core service layer | built |
+| 6 | AXL runtime integration | built, verified against AXL 1.7.0 |
+| 7 | MCP server | built, verified with the official SDK client |
+| 8 | Dev dashboard, grant management, audit log, docs | built |
+| 9 | Identity verification | built, simulated vendor |
+| 10 | Live mode | gate built, refuses — no custody partner |
+| 11 | Virtual card issuance | interface only, and cannot be zero-touch |
 
-Phase 0 — picking the KYC vendor and the money-custody/BaaS partner — is a
-business track that runs in parallel. Neither choice changes the shape of the
-Wallet API, but nothing can go live without both.
+### The provider seam
 
-### What Phase 1 actually gives you
+Payments, messaging and KYC each sit behind an interface with two
+implementations: a **simulated** driver used when no credentials are present,
+and a **real** driver that throws until it is wired to a chosen partner.
 
-- Email/password accounts for the human side (Mode A).
-- **Agent birth**: naming an agent atomically allocates its `Handle` (one email
-  address, one phone number) and opens its sandbox `Wallet`. An agent without a
-  handle or a wallet cannot exist in the database.
-- A sandbox wallet with a **manually creditable** balance, backed by an
-  append-only ledger.
-- A dashboard listing agents, their handles, their balances and their ledger.
+Nothing silently falls back. A live-mode wallet with no custody partner
+configured fails hard, because a live wallet quietly running on fake money is
+strictly worse than an error. The same applies to a KYC integration that would
+approve an identity nobody checked — the most dangerous stub this codebase
+could contain, so it refuses instead.
 
-### What Phase 1 deliberately does *not* do
+Phase 0 — picking the KYC vendor and the money-custody/BaaS partner — is the
+business track that closes these. Neither choice changes an API shape.
 
-- **Handles are internal placeholders.** Emails use a `.local` domain and phone
-  numbers use country code `+99`, which E.164 does not assign — so neither can
-  be mistaken for, or accidentally routed to, a real address. `Handle.provisioned`
-  stays `false` and the UI says so on every screen that shows one. Phase 3
-  replaces both with real Postmark/Twilio values.
-- **No real money.** No Razorpay, no funding mandate, no custody partner. The
-  only ledger entry type Phase 1 writes is `manual_credit`, and
-  `creditWalletManually()` refuses to touch a wallet that is not in sandbox mode.
-- **No agent-facing API.** `Grant`, `AccessToken` and `GrantAuditLog` exist as
-  tables but nothing issues a token yet, so there is no way for an agent to act
-  on a handle. That is Phase 4.
-- **No KYC.** Every user is `unverified`. Live mode is refused at agent birth.
+### What is deliberately not real
+
+- **Handles are unroutable.** Email uses a `.local` domain, phone numbers use
+  country code `+99`, which E.164 does not assign. `Handle.provisioned` stays
+  `false` and the UI says so wherever one is shown.
+- **No money moves.** The simulated custody driver settles instantly and moves
+  nothing.
+- **KYC proves nothing.** The simulated vendor verifies instantly.
+- **Live mode is closed.** It needs a verified human *and* a configured custody
+  partner; either missing is a refusal.
+- **Virtual cards are an interface and a documented refusal** — see below.
 
 ## Design notes
 
-**Money is integer paise, everywhere.** Every amount is a `BigInt` column
-holding minor units. No float ever holds a rupee amount. `src/lib/money.ts` has
-the only parse and format functions; use them rather than hand-rolling.
+**Money is integer paise, everywhere.** Every amount is a `BigInt` column of
+minor units, and crosses the wire as a *string*: a large rupee figure loses
+precision as a JSON double, and fractional paise do not exist. A float amount
+is rejected outright. `src/lib/money.ts` holds the only parse and format
+functions.
 
 **The ledger is append-only.** `LedgerEntry` rows are never updated or deleted.
 A reversal is a new `refund_in`/`refund_out` row pointing back through
-`originalEntryId`; both legs of an internal transfer share a `transferGroupId`.
-`Wallet.balance` is only a cache written in the same transaction as its entry —
-`reconcileBalance()` can always rebuild it from the entries alone.
+`originalEntryId`; both legs of a transfer share a `transferGroupId` and are
+reversed together or not at all. `Wallet.balance` is a cache written in the same
+transaction as its entry, and `reconcileBalance()` rebuilds it from the entries
+alone.
 
-**`mode` is present from day one.** Every `Handle`, `Wallet` and `Grant` carries
-`sandbox | live` (spec Section 14) rather than having it bolted on later.
+**Debits are conditional, not checked.** Funds leave through an `UPDATE`
+guarded by `balance >= amount`. A read-then-write check would let two concurrent
+debits both pass a test that was true when each of them read it.
 
-**KYC identifiers are never stored raw.** The `User` table holds the vendor's
-verdict, the vendor's reference, and a masked tail for display. The full Aadhaar
-number or SSN never reaches this database — that constraint is in the schema
-now, before there is any vendor to break it.
+**Money-moving calls are idempotent.** A caller-supplied key is stored on the
+entry under a unique constraint, so a retry — or a race between identical calls
+— returns the original entry instead of moving money twice.
 
-**Ownership is checked server-side, always.** Every query that loads an agent
-goes through `getAgentForUser(userId, agentId)`. An id arriving in a URL or a
-form field is not an authorization.
+**One implementation of every action.** `src/server/core.ts` is the only place
+an action exists. Scope check, server-side spending-cap check and audit write
+wrap every call through a single helper, so no code path can skip them. REST,
+MCP and AXL are thin callers.
+
+**Failures are audited too.** Nothing an agent does was approved in the moment,
+so the dashboard is the only place a human learns what happened — and an app
+repeatedly hitting its spending cap is exactly what someone would want to
+notice.
+
+**Credentials are never stored in the clear.** Client secrets, API keys, access
+and refresh tokens are shown once and kept as SHA-256 hashes. SHA-256 rather
+than bcrypt is deliberate for machine credentials: they are 256-bit random
+strings with no dictionary to slow down, and they are verified on every call.
+Human passwords still use bcrypt.
+
+**KYC identifiers cannot be stored.** The provider interface has nowhere to put
+an Aadhaar number or SSN — the vendor collects it in their own hosted flow and
+returns a verdict, a reference and a masked tail. A test asserts the `User`
+table has no column one could be written to.
+
+### Notes from integration
+
+Three things about AXL differ from the build spec's description, found by
+reading the repository rather than assuming:
+
+- The CLI package is `scl-axl`, its binary is `axl`, and it is not on npm — it
+  must be built from source.
+- AXL does not generate routes into this repo. It is a gateway that reads
+  `manifest.json` and forwards to `BASE_URL`, so the Phase 5 routes are not
+  retired by Phase 6; they *become* the backend AXL calls.
+- AXL does not forward `Authorization` verbatim as its docs state — the runtime
+  re-shapes the bearer token into `Cookie: sid=<token>`. Skyborn accepts either
+  carrier.
+
+No AXL action declares `CONFIRM`. Its only confirmation gate holds a call until
+a human supplies a one-time code, which is precisely the involvement this
+platform exists to remove. The spending cap, audit log and revoke replace it.
+
+On MCP: `@modelcontextprotocol/sdk` 1.30.0 has `LATEST_PROTOCOL_VERSION`
+`2025-11-25` and no `server/discover` method, so the breaking rewrite the build
+spec warns about did not land as described. This is built against what ships,
+and driven end to end by the SDK's own client.
+
+### Why virtual cards stay an interface
+
+Two reasons, and only the first is about time. Issuing needs a licensed partner
+(Zeta, M2P, Karbon) with real onboarding lead time. But a genuinely arbitrary
+one-off card purchase at a merchant with no prior mandate relationship also hits
+India's card-not-present AFA requirement — so the human is asked for an OTP.
+That is a rule about card rails, not a gap in this code, and no implementation
+removes it. `wallet.transfer` stays the primary send-money primitive because it
+has none of this problem.
 
 ### Layout
 
 ```
-prisma/schema.prisma     Full Section 7 data model, including later-phase tables
-prisma/seed.ts           Idempotent sample data
-src/lib/auth.ts          NextAuth (Mode A, humans only)
-src/lib/money.ts         Paise parsing and formatting
-src/lib/prisma.ts        Prisma client singleton
-src/server/agents.ts     Agent birth, ownership-scoped reads
-src/server/wallet.ts     Sandbox credit, ledger reads, balance reconciliation
-src/server/handles.ts    Phase 1 placeholder email/phone allocation
-src/server/actions.ts    Server actions — the only write path from the UI
-src/components/          Monochrome UI primitives
-src/app/                 Landing, auth, dashboard
+prisma/schema.prisma       Full Section 7 data model
+src/lib/                   money, scopes, auth, api plumbing, action catalogue
+src/server/                Core service layer + domain services
+src/server/providers/      payments, messaging, kyc, cards — the seams
+src/app/api/v1/            Agent-facing REST (the backend AXL fronts)
+src/app/api/auth/          Grant request, consent, token, refresh
+src/app/api/oauth/         OAuth 2.1 for MCP clients
+src/app/api/mcp/           The MCP endpoint
+axl/flow/                  .flow schemas compiled by scl-axl
+tests/                     147 tests
 ```
 
-`src/server/*` holds plain, transport-agnostic functions on purpose. Phase 5
-turns this into the single core service layer that the REST, MCP and AXL
-adapters all call — the point being that the wallet and messaging logic exists
-exactly once, no matter how many surfaces reach it.
+The action catalogue in `src/lib/catalogue.ts` is defined once and feeds the
+REST routes, `/.well-known/agent-tools.json`, the MCP tool list and the docs
+page, so an action cannot be added to one surface and forgotten in another.
 
 ### Interface
 
-Dark theme only, and strictly monochrome: black grounds, grey surfaces and
-lines, white and grey text. There is no light theme and no colour accent —
-emphasis comes from contrast and weight, and status is always carried by a word
-rather than by hue, so every screen survives being read in greyscale. The
-tokens live in `src/app/globals.css`; the primitives that consume them are in
-`src/components/ui.tsx`.
+Dark theme only, strictly monochrome: black grounds, grey surfaces and lines,
+white and grey text. No light theme, no colour accent. Emphasis comes from
+contrast and weight, and status is always carried by a word rather than a hue,
+so every screen survives being read in greyscale. Tokens live in
+`src/app/globals.css`; the primitives are in `src/components/ui.tsx`.
 
-## Notes on scope
+## Running the AXL surface
+
+```bash
+git clone https://github.com/Silvercloud-labs/axl && cd axl
+npm install && npm run build          # scl-axl is not published to npm
+cd /path/to/skyborn/axl
+node /path/to/axl/packages/cli/dist/index.js build
+node /path/to/axl/packages/cli/dist/index.js serve --port 3939
+```
+
+With Skyborn running on :3000, the engine serves `/actions/:name`,
+`/resources/:name`, `/mcp` and `/.well-known/axl` on :3939 and forwards to it.
+
+## Scope
 
 Skyborn holds KYC and financial data, so this repository stays **private**.
 
 The regulatory notes carried through this codebase — RBI's e-mandate framework,
-the ₹15,000 no-OTP threshold, PPI custody through a licensed partner — are
-factual grounding, not legal advice. Get a real compliance review before this
-touches a real user's money.
+the ₹15,000 no-OTP threshold, PPI custody through a licensed partner, card-not-
+present AFA — are factual grounding, not legal advice. Get a real compliance
+review before this touches a real user's money.

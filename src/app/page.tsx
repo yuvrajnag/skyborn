@@ -32,12 +32,15 @@ const SURFACES = [
 ];
 
 const PHASES = [
-  { label: "Skeleton — accounts, agent birth, sandbox wallet", state: "built" },
-  { label: "Real wallet, sandbox money", state: "next" },
-  { label: "Email, SMS and voice on the handle", state: "planned" },
-  { label: "Auth API — grants, consent, tokens", state: "planned" },
-  { label: "Core service layer", state: "planned" },
-  { label: "AXL runtime, MCP server, live mode", state: "planned" },
+  { label: "Accounts, agent birth, sandbox wallet", state: "built" },
+  { label: "Wallet — mandate, top-up, transfer, refund, payout", state: "simulated" },
+  { label: "Handle — email, SMS, voice, one-time codes", state: "simulated" },
+  { label: "Auth API — grants, consent, tokens, revoke", state: "built" },
+  { label: "Core service layer, REST surface", state: "built" },
+  { label: "AXL runtime, MCP server, dev dashboard", state: "built" },
+  { label: "Identity verification", state: "simulated" },
+  { label: "Live mode", state: "gated" },
+  { label: "Virtual card issuance", state: "not viable yet" },
 ];
 
 export default async function LandingPage() {
@@ -122,9 +125,9 @@ export default async function LandingPage() {
             What is actually built
           </h2>
           <p className="text-text-dim mt-3 max-w-2xl text-sm leading-relaxed">
-            This deployment is Phase 1. Sandbox only — no real money moves, and
-            handles are internal placeholders until the messaging providers are
-            wired in.
+            Every phase is implemented. What varies is whether a real third
+            party is connected — and where one is not, the code refuses rather
+            than pretending. Nothing here moves real money.
           </p>
           <ol className="border-line mt-8 divide-y divide-[var(--color-line)] overflow-hidden rounded-xl border">
             {PHASES.map((phase, index) => (
