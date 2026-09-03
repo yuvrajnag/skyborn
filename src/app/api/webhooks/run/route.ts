@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { timingSafeEquals } from "@/lib/webhook-auth";
+import { pruneRateLimitCounters } from "@/server/rate-limit";
 import { runDueDeliveries } from "@/server/webhooks";
 
 /**
@@ -27,5 +28,11 @@ export async function POST(request: Request) {
   }
 
   const result = await runDueDeliveries();
-  return NextResponse.json(result);
+
+  // Closed rate-limit windows are never read again, so they are pure growth
+  // until something removes them. This endpoint is already scheduled, so it
+  // does the sweeping rather than adding a second thing to schedule.
+  const pruned = await pruneRateLimitCounters();
+
+  return NextResponse.json({ ...result, rateLimitCountersPruned: pruned });
 }

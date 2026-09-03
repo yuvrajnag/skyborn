@@ -409,6 +409,22 @@ model Message {
   @@index([agentId, createdAt])
 }
 
+/// A fixed-window rate-limit counter.
+///
+/// Kept in the database rather than in memory on purpose: the limit has to hold
+/// across every instance serving the API, and an in-memory counter silently
+/// multiplies the real limit by the number of instances running.
+model RateLimitCounter {
+  id          String   @id @default(cuid())
+  /// Grant id and action, so one grant's traffic cannot consume another's.
+  bucketKey   String
+  windowStart DateTime
+  count       Int      @default(1)
+
+  @@unique([bucketKey, windowStart])
+  @@index([windowStart])
+}
+
 model WebhookEndpoint {
   id       String @id @default(cuid())
   devAppId String

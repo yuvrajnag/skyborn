@@ -4,6 +4,7 @@ import { CoreError } from "@/server/core";
 import { GrantError, authenticateBearer, bearerFromRequest } from "@/server/grants";
 import { MoneyParseError } from "@/lib/money";
 import { WalletError } from "@/server/wallet";
+import { RateLimitError } from "@/server/rate-limit";
 import { MessagingError } from "@/server/messaging";
 import { PaymentProviderError } from "@/server/providers/payments";
 import { MessagingProviderError } from "@/server/providers/messaging";
@@ -25,6 +26,11 @@ export function apiError(code: string, message: string, status: number) {
 
 /** Maps a thrown domain error onto its wire status. */
 export function errorResponse(error: unknown) {
+  if (error instanceof RateLimitError) {
+    const response = apiError(error.code, error.message, error.status);
+    response.headers.set("Retry-After", String(error.retryAfterSeconds));
+    return response;
+  }
   if (error instanceof GrantError || error instanceof CoreError) {
     return apiError(error.code, error.message, error.status);
   }

@@ -34,7 +34,7 @@ npm run dev:grant             # prints a working access token and a curl to try
 | --- | --- |
 | `npm run dev` | Next dev server |
 | `npm run build` | `prisma generate` then a production build |
-| `npm test` | The full suite (147 tests) |
+| `npm test` | The full suite (204 tests) |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint |
 | `npm run db:migrate` / `db:deploy` / `db:seed` / `db:studio` | Prisma |
@@ -55,7 +55,7 @@ refuses rather than pretending.
 | 5 | Core service layer | built |
 | 6 | AXL runtime integration | built, verified against AXL 1.7.0 |
 | 7 | MCP server | built, verified with the official SDK client |
-| 8 | Dev dashboard, grant management, audit log, docs | built |
+| 8 | Dev dashboard, grants, audit log, webhooks, docs | built |
 | 9 | Identity verification | built, simulated vendor |
 | 10 | Live mode | gate built, refuses — no custody partner |
 | 11 | Virtual card issuance | interface only, and cannot be zero-touch |
@@ -120,6 +120,19 @@ so the dashboard is the only place a human learns what happened — and an app
 repeatedly hitting its spending cap is exactly what someone would want to
 notice.
 
+**Rate limits hold on both surfaces.** AXL declares `RATE_LIMIT` per action, but
+those limits only apply to traffic that goes through the AXL engine — and
+`/api/v1` is reachable directly. The same limits are enforced there, per grant
+and per action, from the same definition. A test parses `axl/flow/auth.flow` and
+fails if the two ever disagree, or if any action is declared `PUBLIC`.
+
+**Webhook destinations must be public.** Anyone who can register a webhook could
+otherwise make Skyborn issue POSTs from inside the network — at cloud metadata,
+at the database, at any internal endpoint — and read the outcome through the
+recorded response code. Private, loopback and link-local ranges are refused at
+registration *and* again immediately before each delivery, because a name that
+resolved publicly when registered can be re-pointed afterwards.
+
 **Credentials are never stored in the clear.** Client secrets, API keys, access
 and refresh tokens are shown once and kept as SHA-256 hashes. SHA-256 rather
 than bcrypt is deliberate for machine credentials: they are 256-bit random
@@ -175,8 +188,9 @@ src/app/api/v1/            Agent-facing REST (the backend AXL fronts)
 src/app/api/auth/          Grant request, consent, token, refresh
 src/app/api/oauth/         OAuth 2.1 for MCP clients
 src/app/api/mcp/           The MCP endpoint
+src/app/api/webhooks/      Inbound provider hooks, endpoint registration, worker
 axl/flow/                  .flow schemas compiled by scl-axl
-tests/                     147 tests
+tests/                     204 tests
 ```
 
 The action catalogue in `src/lib/catalogue.ts` is defined once and feeds the
@@ -203,6 +217,21 @@ node /path/to/axl/packages/cli/dist/index.js serve --port 3939
 
 With Skyborn running on :3000, the engine serves `/actions/:name`,
 `/resources/:name`, `/mcp` and `/.well-known/axl` on :3939 and forwards to it.
+
+## Operating it
+
+Two things want a scheduler:
+
+```bash
+# Retries due webhook deliveries and sweeps expired rate-limit counters.
+curl -X POST -H "Authorization: Bearer $WEBHOOK_WORKER_SECRET" \
+  https://your-host/api/webhooks/run
+```
+
+Call it as often as you like — it only picks up work that is actually due. The
+retry schedule lives in the database rather than a queue's memory, so a restart
+cannot drop the backlog, and `runDueDeliveries()` can be driven by a BullMQ
+worker instead if you prefer the spec's stack.
 
 ## Scope
 

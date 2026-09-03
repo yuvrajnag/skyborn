@@ -17,6 +17,9 @@ export type ActionParameter = {
   enum?: string[];
 };
 
+/** Requests allowed per minute, per grant. Mirrored by RATE_LIMIT in auth.flow. */
+export type RateLimit = { perMinute: number };
+
 export type ActionDefinition = {
   /** Dotted name, as used by AXL and the audit log. */
   name: string;
@@ -30,6 +33,12 @@ export type ActionDefinition = {
   /** Surfaced to a calling model so it can decide whether to ask first. */
   irreversible?: boolean;
   effects?: string;
+  /**
+   * Per-grant rate limit. Tightest on what moves money or reaches a third
+   * party. A test asserts these match the RATE_LIMIT lines in axl/flow/auth.flow,
+   * so the two surfaces cannot quietly diverge.
+   */
+  rateLimit: RateLimit;
 };
 
 const PAISE = "Amount in paise (integer minor units) as a string. ₹1 is \"100\".";
@@ -43,6 +52,7 @@ export const ACTIONS: ActionDefinition[] = [
     method: "GET",
     path: "/api/v1/wallet/balance",
     parameters: [],
+    rateLimit: { perMinute: 60 },
   },
   {
     name: "wallet.transactions",
@@ -54,6 +64,7 @@ export const ACTIONS: ActionDefinition[] = [
     parameters: [
       { name: "limit", type: "integer", required: false, description: "How many entries to return, up to 200." },
     ],
+    rateLimit: { perMinute: 60 },
   },
   {
     name: "wallet.topup",
@@ -65,6 +76,7 @@ export const ACTIONS: ActionDefinition[] = [
     path: "/api/v1/wallet/topup",
     parameters: [{ name: "amount_paise", type: "string", required: true, description: PAISE }],
     effects: "Debits the human's bank account through the registered mandate.",
+    rateLimit: { perMinute: 10 },
   },
   {
     name: "wallet.transfer",
@@ -81,6 +93,7 @@ export const ACTIONS: ActionDefinition[] = [
     ],
     irreversible: false,
     effects: "Moves money out of this wallet immediately. Reversible only via wallet.refund, and only while the recipient still holds the funds.",
+    rateLimit: { perMinute: 20 },
   },
   {
     name: "wallet.refund",
@@ -94,6 +107,7 @@ export const ACTIONS: ActionDefinition[] = [
       { name: "original_entry_id", type: "string", required: true, description: "The ledger entry id being reversed." },
       { name: "reason", type: "string", required: false, description: "Note stored on the refund entries." },
     ],
+    rateLimit: { perMinute: 10 },
   },
   {
     name: "wallet.payout",
@@ -108,6 +122,7 @@ export const ACTIONS: ActionDefinition[] = [
     ],
     irreversible: true,
     effects: "Sends money outside Skyborn. Once settled at the bank this cannot be reversed from here.",
+    rateLimit: { perMinute: 5 },
   },
   {
     name: "messages.send",
@@ -124,6 +139,7 @@ export const ACTIONS: ActionDefinition[] = [
     ],
     irreversible: true,
     effects: "Delivers a message to a third party. It cannot be unsent.",
+    rateLimit: { perMinute: 30 },
   },
   {
     name: "messages.read",
@@ -136,6 +152,7 @@ export const ACTIONS: ActionDefinition[] = [
       { name: "channel", type: "string", required: false, description: "Restrict to one channel.", enum: ["email", "sms", "call"] },
       { name: "limit", type: "integer", required: false, description: "How many messages to return, up to 200." },
     ],
+    rateLimit: { perMinute: 60 },
   },
   {
     name: "messages.otp_latest",
@@ -150,6 +167,7 @@ export const ACTIONS: ActionDefinition[] = [
       { name: "from", type: "string", required: false, description: "Only consider messages from senders matching this." },
       { name: "within_minutes", type: "integer", required: false, description: "How far back to look. Defaults to 15." },
     ],
+    rateLimit: { perMinute: 30 },
   },
   {
     name: "calls.make",
@@ -164,6 +182,7 @@ export const ACTIONS: ActionDefinition[] = [
     ],
     irreversible: true,
     effects: "Places a real phone call to a third party.",
+    rateLimit: { perMinute: 5 },
   },
   {
     name: "calls.status",
@@ -173,6 +192,7 @@ export const ACTIONS: ActionDefinition[] = [
     method: "GET",
     path: "/api/v1/calls/status",
     parameters: [{ name: "call_id", type: "string", required: true, description: "Id returned by calls.make." }],
+    rateLimit: { perMinute: 60 },
   },
 ];
 

@@ -7,9 +7,11 @@ import { approveGrant, revokeGrantById } from "@/server/grants";
 import {
   MAX_ATTEMPTS,
   WebhookError,
+  assertPublicDestination,
   attemptDelivery,
   createEndpoint,
   emitEvent,
+  isPrivateAddress,
   runDueDeliveries,
   signPayload,
   verifySignature,
@@ -59,7 +61,7 @@ describe("endpoint registration", () => {
     await assert.rejects(
       createEndpoint({
         devAppId: built.devApp.id,
-        url: "https://hooks.example.com/x",
+        url: "https://example.com/hook",
         events: ["not.a.real.event"],
       }),
       (e: WebhookError) => e.code === "NO_EVENTS",
@@ -70,11 +72,73 @@ describe("endpoint registration", () => {
     const built = await approvedGrant();
     const { endpoint, secret } = await createEndpoint({
       devAppId: built.devApp.id,
-      url: "https://hooks.example.com/x",
+      url: "https://example.com/hook",
       events: ["grant.approved", "wallet.transfer"],
     });
     assert.ok(secret.startsWith("sky_whsec_"));
     assert.equal(endpoint.events.length, 2);
+  });
+});
+
+describe("SSRF protection", () => {
+  it("classifies internal address ranges as private", () => {
+    for (const ip of [
+      "127.0.0.1",
+      "10.0.0.5",
+      "192.168.1.1",
+      "172.16.0.1",
+      "172.31.255.255",
+      "169.254.169.254", // cloud metadata
+      "100.64.0.1", // carrier-grade NAT
+      "0.0.0.0",
+      "::1",
+      "fd00::1",
+      "fe80::1",
+      "::ffff:10.0.0.1", // ipv4-mapped
+      "not-an-ip",
+    ]) {
+      assert.equal(isPrivateAddress(ip), true, `${ip} must be treated as private`);
+    }
+  });
+
+  it("lets real public addresses through", () => {
+    for (const ip of ["8.8.8.8", "1.1.1.1", "93.184.216.34", "2606:4700::1111"]) {
+      assert.equal(isPrivateAddress(ip), false, `${ip} must be treated as public`);
+    }
+  });
+
+  it("refuses a destination inside the network", async () => {
+    for (const url of [
+      "https://169.254.169.254/latest/meta-data/",
+      "https://10.0.0.5/internal",
+      "https://192.168.1.1/admin",
+      "https://172.16.0.1/x",
+    ]) {
+      await assert.rejects(
+        assertPublicDestination(url),
+        (e: WebhookError) => e.code === "PRIVATE_DESTINATION",
+        `${url} must be refused`,
+      );
+    }
+  });
+
+  it("refuses to register a webhook pointed at cloud metadata", async () => {
+    const built = await approvedGrant();
+    await assert.rejects(
+      createEndpoint({
+        devAppId: built.devApp.id,
+        url: "https://169.254.169.254/latest/meta-data/",
+        events: ["grant.approved"],
+      }),
+      (e: WebhookError) => e.code === "PRIVATE_DESTINATION",
+    );
+  });
+
+  it("refuses a host that does not resolve at all", async () => {
+    await assert.rejects(
+      assertPublicDestination("https://this-host-does-not-exist.invalid/hook"),
+      (e: WebhookError) => e.code === "UNRESOLVABLE_HOST",
+    );
   });
 });
 
@@ -269,10 +333,11 @@ describe("delivery", () => {
 
   it("never lets a webhook failure break the action that caused it", async () => {
     const built = await approvedGrant();
-    // A URL that cannot resolve. emitEvent must still return cleanly.
+    // A loopback port with nothing listening: registration passes, the delivery
+    // fails, and emitEvent must still return cleanly either way.
     await createEndpoint({
       devAppId: built.devApp.id,
-      url: "https://this-host-does-not-exist.invalid/hook",
+      url: "http://127.0.0.1:1/hook",
       events: ["wallet.payout"],
     });
 

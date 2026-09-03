@@ -1,4 +1,6 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { lookup } from "node:dns/promises";
+import net from "node:net";
 
 import { Prisma } from "@prisma/client";
 
@@ -59,6 +61,99 @@ export class WebhookError extends Error {
   }
 }
 
+/**
+ * Loopback destinations are only allowed outside production, so a developer can
+ * point a webhook at their own machine while testing.
+ */
+function loopbackAllowed(): boolean {
+  if (process.env.WEBHOOK_ALLOW_LOOPBACK === "1") return true;
+  if (process.env.WEBHOOK_ALLOW_LOOPBACK === "0") return false;
+  return process.env.NODE_ENV !== "production";
+}
+
+/**
+ * Addresses that are not on the public internet.
+ *
+ * This is the SSRF boundary. Without it, anyone who can register a webhook can
+ * make Skyborn issue POSTs from inside the network — at cloud metadata
+ * (169.254.169.254), at the database, at any internal admin endpoint — and read
+ * the outcome through the recorded response code. The body never comes back,
+ * but a blind request that mutates internal state is still a request.
+ */
+export function isPrivateAddress(ip: string): boolean {
+  if (net.isIPv4(ip)) {
+    const [a, b] = ip.split(".").map(Number);
+    if (a === 0 || a === 10 || a === 127) return true;
+    if (a === 169 && b === 254) return true; // link-local, incl. cloud metadata
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT
+    if (a >= 224) return true; // multicast and reserved
+    return false;
+  }
+
+  if (net.isIPv6(ip)) {
+    const lower = ip.toLowerCase().replace(/^\[|\]$/g, "");
+    if (lower === "::1" || lower === "::") return true;
+    if (/^f[cd]/.test(lower)) return true; // unique local
+    if (lower.startsWith("fe80")) return true; // link-local
+    const mapped = lower.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (mapped) return isPrivateAddress(mapped[1]);
+    return false;
+  }
+
+  // Anything we cannot classify is refused rather than allowed.
+  return true;
+}
+
+function isLoopback(ip: string): boolean {
+  if (net.isIPv4(ip)) return ip.startsWith("127.");
+  const lower = ip.toLowerCase().replace(/^\[|\]$/g, "");
+  return lower === "::1";
+}
+
+/**
+ * Resolves the host and refuses anything internal.
+ *
+ * Checked at registration *and* again immediately before each delivery: a name
+ * that resolved publicly when it was registered can be re-pointed at an
+ * internal address afterwards, and only the check at send time sees that.
+ */
+export async function assertPublicDestination(rawUrl: string): Promise<void> {
+  const url = new URL(rawUrl);
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+
+  let addresses: string[];
+  if (net.isIP(host)) {
+    addresses = [host];
+  } else {
+    try {
+      const resolved = await lookup(host, { all: true });
+      addresses = resolved.map((entry) => entry.address);
+    } catch {
+      throw new WebhookError(
+        `Could not resolve "${url.hostname}".`,
+        "UNRESOLVABLE_HOST",
+      );
+    }
+  }
+
+  if (addresses.length === 0) {
+    throw new WebhookError(`Could not resolve "${url.hostname}".`, "UNRESOLVABLE_HOST");
+  }
+
+  for (const address of addresses) {
+    if (!isPrivateAddress(address)) continue;
+    if (isLoopback(address) && loopbackAllowed()) continue;
+
+    throw new WebhookError(
+      `"${url.hostname}" resolves to ${address}, which is not a public address. ` +
+        "Webhook destinations must be reachable on the public internet.",
+      "PRIVATE_DESTINATION",
+    );
+  }
+}
+
 export async function createEndpoint(params: {
   devAppId: string;
   url: string;
@@ -84,6 +179,10 @@ export async function createEndpoint(params: {
   if (events.length === 0) {
     throw new WebhookError("Subscribe to at least one known event.", "NO_EVENTS");
   }
+
+  // Refuse anything that points inside the network. Last, because it is the
+  // only check here that costs a DNS lookup.
+  await assertPublicDestination(params.url);
 
   // Returned once. The receiver needs it to verify signatures.
   const secret = randomToken("sky_whsec");
@@ -202,6 +301,10 @@ export async function attemptDelivery(deliveryId: string) {
   let delivered = false;
 
   try {
+    // Re-checked here, not just at registration: a hostname that resolved
+    // publicly then can be re-pointed at an internal address afterwards.
+    await assertPublicDestination(delivery.endpoint.url);
+
     const response = await fetch(delivery.endpoint.url, {
       method: "POST",
       headers: {
@@ -221,7 +324,8 @@ export async function attemptDelivery(deliveryId: string) {
     responseCode = response.status;
     delivered = response.ok;
   } catch {
-    // Timeout, DNS failure, refused connection — all just a failed attempt.
+    // Timeout, DNS failure, refused connection, or a destination that now
+    // resolves somewhere internal — all just a failed attempt.
     responseCode = null;
   }
 

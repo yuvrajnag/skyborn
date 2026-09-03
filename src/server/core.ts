@@ -3,6 +3,8 @@ import { LedgerDirection, MessageChannel, Mode } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { formatRupees } from "@/lib/money";
 import { MONEY_OUT_SCOPES, type Scope } from "@/lib/scopes";
+import { ACTIONS } from "@/lib/catalogue";
+import { consumeRateLimit } from "@/server/rate-limit";
 import { GrantError, type AuthenticatedGrant } from "@/server/grants";
 import {
   getLatestOtp,
@@ -124,6 +126,17 @@ async function withAudit<T>(
 ): Promise<T> {
   try {
     requireScope(ctx.grant, scope);
+
+    // Rate limit after the scope check, so a call the grant cannot make does
+    // not consume quota it was never entitled to spend.
+    const definition = ACTIONS.find((entry) => entry.name === action);
+    if (definition) {
+      await consumeRateLimit({
+        grantId: ctx.grant.id,
+        action,
+        perMinute: definition.rateLimit.perMinute,
+      });
+    }
 
     if (MONEY_OUT_SCOPES.includes(scope)) {
       const amount = paramsSummary.amountPaise;

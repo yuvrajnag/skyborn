@@ -172,6 +172,28 @@ export default async function DocsPage() {
         </section>
 
         <section className="mt-14">
+          <h2 className="text-text text-xl font-medium tracking-tight">Rate limits</h2>
+          <p className="text-text-dim mt-3 max-w-2xl text-sm leading-relaxed">
+            Enforced per grant, per action, per minute — the same limits whether
+            you call Skyborn directly or through the AXL engine. Exceeding one
+            returns <Mono className="text-text">429</Mono> with a{" "}
+            <Mono className="text-text">Retry-After</Mono> header. They are a
+            blast-radius control, not an authorization check: the spending cap
+            is what bounds financial damage.
+          </p>
+          <Card className="mt-5">
+            <ul className="divide-line divide-y">
+              {ACTIONS.map((action) => (
+                <li key={action.name} className="flex items-baseline justify-between gap-4 px-5 py-3">
+                  <Mono className="text-text-dim">{action.name}</Mono>
+                  <Mono className="text-text">{action.rateLimit.perMinute}/min</Mono>
+                </li>
+              ))}
+            </ul>
+          </Card>
+        </section>
+
+        <section className="mt-14">
           <h2 className="text-text text-xl font-medium tracking-tight">
             Retrying safely
           </h2>
