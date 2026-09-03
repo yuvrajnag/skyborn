@@ -144,6 +144,45 @@ an Aadhaar number or SSN — the vendor collects it in their own hosted flow and
 returns a verdict, a reference and a masked tail. A test asserts the `User`
 table has no column one could be written to.
 
+### REST and AXL are one surface
+
+This is worth stating plainly, because the wording in Section 12 implies
+otherwise. There is **one implementation of every action**, and it is
+`src/server/core.ts`. Nothing else contains wallet or messaging logic:
+
+```
+                    src/server/core.ts          <- the only implementation
+                     |          |         |
+        /api/v1/* ---+          |         +--- src/server/mcp.ts  (in-process)
+        (thin HTTP wrappers)    |
+                                |
+        AXL engine :3939 -------+  (forwards over HTTP to /api/v1/*)
+```
+
+`axl/` contains no handlers — only `.flow` declarations. The AXL engine reads
+`manifest.json`, validates shapes, applies rate limits, and forwards each call
+to the same `/api/v1` route a direct caller would hit. So `/actions/wallet_transfer`
+on :3939 and `POST /api/v1/wallet/transfer` on :3000 run identical code; the
+first is the second with a gateway in front.
+
+Section 12 says the AXL-generated routes should replace the hand-written ones.
+AXL 1.7.0 does not generate routes into a project — it is a gateway, and its
+only implemented generator is `DIAGRAM`. So there was nothing to retire: the
+Phase 5 routes *are* what AXL forwards to, and deleting them would leave the
+engine forwarding into a 404. The spec's actual goal — never implementing the
+logic twice — holds.
+
+Four tests enforce it, so the two cannot drift: the `.flow` files must declare
+exactly the catalogue's actions, must point at exactly the endpoints the REST
+surface serves, must have a real route file behind each, and no route may touch
+the database directly.
+
+**Which one should you expose?** Either, but pick one. `/api/v1` needs no extra
+process and enforces scope, spending caps, rate limits and audit on its own.
+The AXL engine adds schema validation at the edge, a `/mcp` endpoint and an
+event stream, at the cost of running a second service built from source. Both
+run the same rules; running both publicly just means two doors to the same room.
+
 ### Notes from integration
 
 Three things about AXL differ from the build spec's description, found by

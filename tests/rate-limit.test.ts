@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { after, describe, it } from "node:test";
 
@@ -143,5 +143,98 @@ describe("the two surfaces agree on limits", () => {
         `${action.name} is PUBLIC — that is an unauthenticated proxy to a wallet`,
       );
     }
+  });
+});
+
+describe("REST and AXL are one surface, not two", () => {
+  /**
+   * The spec's central worry (Section 8) is the wallet logic existing more than
+   * once. It does not: AXL holds no handlers, only declarations, and forwards
+   * every call to the same /api/v1 route a direct caller hits, which is a thin
+   * wrapper over the one core function.
+   *
+   * These tests pin that down, so nobody can add an action to one and not the
+   * other, or point them at different endpoints.
+   */
+  const flowDir = path.join(process.cwd(), "axl/flow");
+  const actionsFlow = readFileSync(path.join(flowDir, "actions.flow"), "utf8");
+  const resourcesFlow = readFileSync(path.join(flowDir, "resources.flow"), "utf8");
+  const flow = `${actionsFlow}\n${resourcesFlow}`;
+
+  /** name -> "METHOD /path", parsed straight out of the .flow files. */
+  function declaredEndpoints(): Map<string, string> {
+    const out = new Map<string, string>();
+    // ACTION wallet_transfer ... ENDPOINT POST /api/v1/wallet/transfer
+    const blocks = flow.split(/^(?=ACTION |RESOURCE )/m);
+    for (const block of blocks) {
+      const name = block.match(/^(?:ACTION|RESOURCE)\s+(\w+)/)?.[1];
+      const endpoint = block.match(/ENDPOINT\s+(GET|POST|PATCH|PUT|DELETE)\s+(\S+)/);
+      if (name && endpoint) out.set(name, `${endpoint[1]} ${endpoint[2]}`);
+    }
+    return out;
+  }
+
+  it("declares exactly the actions the catalogue declares", () => {
+    const declared = [...declaredEndpoints().keys()].sort();
+    const catalogued = ACTIONS.map((a) => a.name.replace(/\./g, "_")).sort();
+
+    assert.deepEqual(
+      declared,
+      catalogued,
+      "an action exists on one surface but not the other",
+    );
+  });
+
+  it("points every AXL action at the same endpoint the REST surface serves", () => {
+    const declared = declaredEndpoints();
+
+    for (const action of ACTIONS) {
+      const flowName = action.name.replace(/\./g, "_");
+      assert.equal(
+        declared.get(flowName),
+        `${action.method} ${action.path}`,
+        `${action.name}: AXL forwards to "${declared.get(flowName)}" but the REST surface serves "${action.method} ${action.path}"`,
+      );
+    }
+  });
+
+  it("has a real route file behind every declared endpoint", () => {
+    for (const action of ACTIONS) {
+      // /api/v1/wallet/transfer -> src/app/api/v1/wallet/transfer/route.ts
+      const routeFile = path.join(process.cwd(), "src/app", action.path, "route.ts");
+      assert.ok(
+        existsSync(routeFile),
+        `${action.name} declares ${action.path} but ${routeFile} does not exist — AXL would forward into a 404`,
+      );
+    }
+  });
+
+  it("keeps every route a thin wrapper, with no business logic of its own", () => {
+    for (const action of ACTIONS) {
+      const source = readFileSync(
+        path.join(process.cwd(), "src/app", action.path, "route.ts"),
+        "utf8",
+      );
+
+      // A route may parse input and call core. It must not reach for the
+      // database, or it has started being a second implementation.
+      assert.ok(
+        !/\bprisma\./.test(source),
+        `${action.path} touches prisma directly — business logic belongs in the core layer`,
+      );
+      assert.ok(
+        /@\/server\/core/.test(source),
+        `${action.path} does not call the core service layer`,
+      );
+    }
+  });
+
+  it("holds no handler logic in the AXL project at all", () => {
+    const files = readdirSync(flowDir);
+    assert.deepEqual(
+      files.filter((f) => !f.endsWith(".flow")).sort(),
+      [],
+      "axl/flow should contain only declarations",
+    );
   });
 });
