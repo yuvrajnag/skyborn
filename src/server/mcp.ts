@@ -71,9 +71,13 @@ function asChannel(value: unknown): MessageChannel | undefined {
   return undefined;
 }
 
+/**
+ * Same rule as the REST surface: paise as a string, never a JSON number. The
+ * tool schema published in tools/list already declares amount_paise a string,
+ * so a compliant client sends one.
+ */
 function paise(args: Record<string, unknown>, field = "amount_paise"): bigint {
   const raw = args[field];
-  if (typeof raw === "number" && Number.isInteger(raw)) return BigInt(raw);
   if (typeof raw === "string" && /^\d+$/.test(raw.trim())) return BigInt(raw.trim());
   throw new CoreError(
     `${field} must be a whole number of paise, as a string. ₹1 is "100".`,

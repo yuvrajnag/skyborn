@@ -1,6 +1,6 @@
 /** Builds a rich, realistic state so every screen has something to show. */
 import bcrypt from "bcryptjs";
-import { GrantStatus, MessageChannel, Mode } from "@prisma/client";
+import { GrantStatus, MessageChannel } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
 import { birthAgent } from "@/server/agents";
