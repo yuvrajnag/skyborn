@@ -4,9 +4,13 @@ import { after, describe, it } from "node:test";
 import { MessageChannel } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
+import { requirePaise } from "@/lib/api";
+import { callTool } from "@/server/mcp";
 import {
   CoreError,
   callsMake,
+  spentUnderGrant,
+  walletRefund,
   messagesLatestOtp,
   messagesRead,
   messagesSend,
@@ -18,7 +22,7 @@ import {
 } from "@/server/core";
 import { GrantError, authenticateBearer, revokeGrantById } from "@/server/grants";
 import { recordInboundMessage } from "@/server/messaging";
-import { createFundingMandate, creditWalletManually } from "@/server/wallet";
+import { createFundingMandate, creditWalletManually, getBalance, transferMoney } from "@/server/wallet";
 import { approvedGrant } from "./auth.test";
 import { makeAgent } from "./helpers";
 
@@ -260,5 +264,200 @@ describe("revocation stops everything", () => {
     const balanceBefore = built.wallet.balance;
     assert.equal(balanceBefore, 0n);
     assert.ok(to);
+  });
+});
+
+describe("spending cap cannot be bypassed through a refund", () => {
+  /**
+   * The attack: receiving is correctly uncapped, so a capped grant takes in a
+   * large inbound transfer and then refunds it. The reversal of a credit is a
+   * debit — money leaving — and before this was fixed it carried no amount into
+   * the cap check at all, so the whole inbound sum could be pushed back out,
+   * repeatedly, by a grant capped far below it.
+   */
+  async function fundedSender(amountPaise: bigint) {
+    const { agent } = await makeAgent(`Refund Sender ${Date.now()}${Math.random()}`);
+    const wallet = await prisma.wallet.findUniqueOrThrow({ where: { agentId: agent.id } });
+    await creditWalletManually({ walletId: wallet.id, amountPaise });
+    return wallet;
+  }
+
+  it("refuses a refund whose outbound leg would cross the cap", async () => {
+    const { ctx, wallet } = await ctxFor({
+      scopes: ["wallet:read", "wallet:transfer", "wallet:refund"],
+      capPaise: 50_000n, // ₹500
+    });
+
+    // Receiving is uncapped, and must stay that way: ₹5,000 in, cap ₹500.
+    const sender = await fundedSender(1_000_000n);
+    const inbound = await transferMoney({
+      fromWalletId: sender.id,
+      toWalletId: wallet.id,
+      amountPaise: 500_000n,
+    });
+    assert.equal(await getBalance(wallet.id), 500_000n);
+
+    // The credit leg on this wallet is what a refund would reverse outward.
+    const received = await prisma.ledgerEntry.findFirstOrThrow({
+      where: { walletId: wallet.id, transferGroupId: inbound.entry.transferGroupId },
+    });
+    assert.equal(received.direction, "credit");
+
+    await assert.rejects(
+      walletRefund(ctx, { originalEntryId: received.id }),
+      (e: CoreError) => e.code === "SPENDING_CAP_EXCEEDED" && e.status === 403,
+      "refunding an inbound transfer moves money out and must respect the cap",
+    );
+
+    // Nothing moved.
+    assert.equal(await getBalance(wallet.id), 500_000n);
+  });
+
+  it("does not cap a refund that brings money back in", async () => {
+    const { ctx, wallet } = await ctxFor({
+      scopes: ["wallet:read", "wallet:transfer", "wallet:refund"],
+      capPaise: 50_000n,
+    });
+    await creditWalletManually({ walletId: wallet.id, amountPaise: 1_000_000n });
+
+    const { agent: recipient } = await makeAgent(`Refund Recipient ${Date.now()}`);
+    const to = (await prisma.handle.findUniqueOrThrow({ where: { agentId: recipient.id } })).email;
+
+    // Spend right up to the cap.
+    const sent = await walletTransfer(ctx, { toHandle: to, amountPaise: 50_000n });
+    await assert.rejects(
+      walletTransfer(ctx, { toHandle: to, amountPaise: 1n }),
+      (e: CoreError) => e.code === "SPENDING_CAP_EXCEEDED",
+    );
+
+    // Reversing our own outgoing transfer returns money to us. That is not
+    // spending, so it must go through even with the cap fully consumed.
+    const before = await getBalance(wallet.id);
+    const refund = await walletRefund(ctx, { originalEntryId: sent.entryId });
+    assert.ok(refund.entryIds.length >= 1);
+    assert.equal(await getBalance(wallet.id), before + 50_000n);
+  });
+
+  it("counts an outbound refund against later calls", async () => {
+    const { ctx, wallet } = await ctxFor({
+      scopes: ["wallet:read", "wallet:transfer", "wallet:refund"],
+      capPaise: 100_000n, // ₹1,000
+    });
+
+    const sender = await fundedSender(1_000_000n);
+    const inbound = await transferMoney({
+      fromWalletId: sender.id,
+      toWalletId: wallet.id,
+      amountPaise: 60_000n,
+    });
+    const received = await prisma.ledgerEntry.findFirstOrThrow({
+      where: { walletId: wallet.id, transferGroupId: inbound.entry.transferGroupId },
+    });
+
+    // ₹600 out via refund, inside the ₹1,000 cap.
+    await walletRefund(ctx, { originalEntryId: received.id });
+
+    // It has to consume cap, or the bypass just needs more than one call.
+    assert.equal(await spentUnderGrant(ctx.grant.id), 60_000n);
+
+    const { agent: recipient } = await makeAgent(`Cap Consumed ${Date.now()}`);
+    const to = (await prisma.handle.findUniqueOrThrow({ where: { agentId: recipient.id } })).email;
+    await creditWalletManually({ walletId: wallet.id, amountPaise: 1_000_000n });
+
+    await assert.rejects(
+      walletTransfer(ctx, { toHandle: to, amountPaise: 50_000n }),
+      (e: CoreError) => e.code === "SPENDING_CAP_EXCEEDED",
+      "the refund's ₹600 must already have been spent against the ₹1,000 cap",
+    );
+  });
+
+  it("still refuses a refund of an entry on somebody else's wallet", async () => {
+    const { ctx } = await ctxFor({ scopes: ["wallet:read", "wallet:refund"] });
+    const stranger = await fundedSender(500_000n);
+    const strangerEntry = await prisma.ledgerEntry.findFirstOrThrow({
+      where: { walletId: stranger.id },
+    });
+
+    await assert.rejects(
+      walletRefund(ctx, { originalEntryId: strangerEntry.id }),
+      (e: CoreError) => e.code === "ENTRY_NOT_FOUND" && e.status === 404,
+    );
+  });
+
+  it("audits a refund refused by the cap", async () => {
+    const { ctx, wallet, grant } = await ctxFor({
+      scopes: ["wallet:read", "wallet:transfer", "wallet:refund"],
+      capPaise: 10_000n,
+    });
+    const sender = await fundedSender(1_000_000n);
+    const inbound = await transferMoney({
+      fromWalletId: sender.id,
+      toWalletId: wallet.id,
+      amountPaise: 400_000n,
+    });
+    const received = await prisma.ledgerEntry.findFirstOrThrow({
+      where: { walletId: wallet.id, transferGroupId: inbound.entry.transferGroupId },
+    });
+
+    await assert.rejects(walletRefund(ctx, { originalEntryId: received.id }));
+
+    const log = await prisma.grantAuditLog.findFirstOrThrow({
+      where: { grantId: grant.id, action: "wallet.refund" },
+    });
+    assert.equal(log.resultStatus, "error");
+    assert.equal(log.errorCode, "SPENDING_CAP_EXCEEDED");
+  });
+});
+
+describe("amounts are strings on the wire, never JSON numbers", () => {
+  /**
+   * The invariant the code claims: paise crosses the wire as a string. An
+   * integer JSON number used to be accepted, which was safe at today's amounts
+   * but taught callers a habit that loses precision above 2^53 paise — and
+   * contradicted the schema, which declares amount_paise a string.
+   */
+  it("rejects an integer JSON number on the REST surface", () => {
+    assert.throws(
+      () => requirePaise({ amount_paise: 100 }),
+      (e: CoreError) => e.code === "INVALID_AMOUNT",
+      "an integer number must be refused, not quietly accepted",
+    );
+  });
+
+  it("rejects a float and a negative", () => {
+    for (const value of [100.5, -100, Number.MAX_SAFE_INTEGER + 1]) {
+      assert.throws(
+        () => requirePaise({ amount_paise: value }),
+        (e: CoreError) => e.code === "INVALID_AMOUNT",
+      );
+    }
+  });
+
+  it("accepts a numeric string", () => {
+    assert.equal(requirePaise({ amount_paise: "100" }), 100n);
+    assert.equal(requirePaise({ amount_paise: "  250075 " }), 250075n);
+  });
+
+  it("keeps precision a double would lose", () => {
+    const huge = "9007199254740993"; // 2^53 + 1
+    assert.equal(requirePaise({ amount_paise: huge }), 9007199254740993n);
+    assert.notEqual(Number(huge).toString(), huge, "a double cannot hold this");
+  });
+
+  it("still complains when the field is missing", () => {
+    assert.throws(
+      () => requirePaise({}),
+      (e: CoreError) => e.code === "MISSING_FIELD",
+    );
+  });
+
+  it("applies the same rule on the MCP surface", async () => {
+    const built = await approvedGrant({ scopes: ["wallet:read", "wallet:transfer"] });
+    const grant = await authenticateBearer(built.tokens.accessToken);
+
+    await assert.rejects(
+      callTool(grant, "transfer_money", { to_handle: "x@y.local", amount_paise: 100 }),
+      (e: { code?: string }) => e.code === "INVALID_AMOUNT",
+    );
   });
 });

@@ -34,11 +34,16 @@ npm run dev:grant             # prints a working access token and a curl to try
 | --- | --- |
 | `npm run dev` | Next dev server |
 | `npm run build` | `prisma generate` then a production build |
-| `npm test` | The full suite (204 tests) |
+| `npm test` | The full suite (224 tests — needs `DATABASE_URL`) |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint |
 | `npm run db:migrate` / `db:deploy` / `db:seed` / `db:studio` | Prisma |
 | `npm run dev:grant` | Mint a sandbox agent token locally |
+
+Most of the suite exercises real ledger, grant and webhook behaviour against
+Postgres, so `npm test` needs a reachable `DATABASE_URL`. Without one the runner
+still reports 224 tests but only the ~54 pure-logic ones (money formatting, OTP
+parsing, signatures, address classification) pass.
 
 ## Status
 
@@ -183,6 +188,29 @@ The AXL engine adds schema validation at the edge, a `/mcp` endpoint and an
 event stream, at the cost of running a second service built from source. Both
 run the same rules; running both publicly just means two doors to the same room.
 
+### A refund is not inherently money-in
+
+Worth recording, because it was a live spending-cap bypass and the reason is not
+obvious. A refund has no fixed direction — it is the mirror of whatever it
+reverses. Reversing a debit returns money (`refund_in`); reversing a **credit
+sends money out** (`refund_out`).
+
+Receiving is correctly uncapped: a grant taking an inbound transfer is not
+spending. But that made a loop: receive an inbound transfer far larger than the
+cap, then refund it, and the reversal pushes the whole sum straight back out —
+and the cap check never fired, because a refund's parameters name only the entry
+being reversed, never an amount. Repeat as needed.
+
+The fix does not simply mark `wallet:refund` as money-out, because that would
+wrongly cap refunds that bring money *back*. Instead the outbound legs are
+computed from the entry being reversed — the credit legs belonging to this
+wallet — and only that amount is capped, and only when it is non-zero. It also
+counts toward cumulative spend, or the bypass would just need more calls.
+
+The general shape: **a cap keyed to a request parameter only holds for actions
+that name their amount up front.** Anything whose value is implied by existing
+state has to resolve it before the check.
+
 ### Notes from integration
 
 Three things about AXL differ from the build spec's description, found by
@@ -229,7 +257,7 @@ src/app/api/oauth/         OAuth 2.1 for MCP clients
 src/app/api/mcp/           The MCP endpoint
 src/app/api/webhooks/      Inbound provider hooks, endpoint registration, worker
 axl/flow/                  .flow schemas compiled by scl-axl
-tests/                     204 tests
+tests/                     224 tests
 ```
 
 The action catalogue in `src/lib/catalogue.ts` is defined once and feeds the

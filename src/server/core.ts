@@ -72,12 +72,20 @@ function walletOf(grant: AuthenticatedGrant) {
 
 /**
  * Total already spent under this Grant — the sum of every money-out entry it
- * has written. Computed from the ledger rather than a running counter, so it
+ * has written. Computed from the audit log rather than a running counter, so it
  * cannot drift from what actually happened.
+ *
+ * wallet.refund is included because a refund can move money *out*: reversing a
+ * credit writes a debit. Only the refunds that did so carry an amountPaise in
+ * their summary, so a refund that returned money inward contributes nothing.
  */
 export async function spentUnderGrant(grantId: string): Promise<bigint> {
   const logs = await prisma.grantAuditLog.findMany({
-    where: { grantId, resultStatus: "ok", action: { in: ["wallet.transfer", "wallet.payout"] } },
+    where: {
+      grantId,
+      resultStatus: "ok",
+      action: { in: ["wallet.transfer", "wallet.payout", "wallet.refund"] },
+    },
     select: { paramsSummary: true },
   });
 
@@ -123,7 +131,26 @@ async function withAudit<T>(
   scope: Scope,
   paramsSummary: Record<string, unknown>,
   run: () => Promise<T>,
+  options?: {
+    /**
+     * How much this call will move *out* of the wallet, when that cannot be
+     * read straight off the parameters.
+     *
+     * A transfer and a payout both name their amount up front. A refund does
+     * not: whether it moves money out at all, and how much, depends on the
+     * entry being reversed, which has to be looked up. Resolving it here rather
+     * than in the caller keeps the lookup inside the try block, so a refusal is
+     * still audited.
+     *
+     * Returning null means this call moves nothing out and is not capped.
+     */
+    resolveOutboundAmount?: () => Promise<bigint | null>;
+  },
 ): Promise<T> {
+  // Reassigned when an outbound amount is resolved, so the audit row records
+  // what was actually spent and spentUnderGrant can count it later.
+  let summary = paramsSummary;
+
   try {
     requireScope(ctx.grant, scope);
 
@@ -138,11 +165,18 @@ async function withAudit<T>(
       });
     }
 
-    if (MONEY_OUT_SCOPES.includes(scope)) {
+    let outbound: bigint | null = null;
+    if (options?.resolveOutboundAmount) {
+      outbound = await options.resolveOutboundAmount();
+    } else if (MONEY_OUT_SCOPES.includes(scope)) {
       const amount = paramsSummary.amountPaise;
-      if (typeof amount === "string") {
-        await enforceSpendingCap(ctx.grant, BigInt(amount));
-      }
+      if (typeof amount === "string") outbound = BigInt(amount);
+    }
+
+    if (outbound !== null && outbound > 0n) {
+      await enforceSpendingCap(ctx.grant, outbound);
+      // Recorded so this call counts against the cap on every later one.
+      summary = { ...paramsSummary, amountPaise: outbound.toString() };
     }
 
     const result = await run();
@@ -151,7 +185,7 @@ async function withAudit<T>(
       data: {
         grantId: ctx.grant.id,
         action,
-        paramsSummary: paramsSummary as never,
+        paramsSummary: summary as never,
         resultStatus: "ok",
       },
     });
@@ -175,7 +209,7 @@ async function withAudit<T>(
       data: {
         grantId: ctx.grant.id,
         action,
-        paramsSummary: paramsSummary as never,
+        paramsSummary: summary as never,
         resultStatus: "error",
         errorCode:
           error instanceof CoreError || error instanceof GrantError
@@ -281,6 +315,44 @@ export async function walletTransfer(
   );
 }
 
+/**
+ * How much reversing this entry would take *out* of the given wallet.
+ *
+ * A refund is not inherently money-in or money-out — it is the mirror of
+ * whatever it reverses. Reversing a credit writes a debit (money leaves);
+ * reversing a debit writes a credit (money returns). Both legs of a transfer
+ * are reversed together, so each leg is judged against the wallet it belongs
+ * to, and only the credit legs on *this* wallet count as spending.
+ *
+ * Without this, a capped grant could receive an uncapped inbound transfer and
+ * then refund it — moving the money straight back out with no cap check at all,
+ * repeatedly.
+ */
+export async function outboundAmountOfRefund(params: {
+  originalEntryId: string;
+  walletId: string;
+}): Promise<bigint> {
+  const original = await prisma.ledgerEntry.findUnique({
+    where: { id: params.originalEntryId },
+  });
+  if (!original || original.walletId !== params.walletId) {
+    throw new CoreError("No such entry on this wallet.", "ENTRY_NOT_FOUND", 404);
+  }
+
+  const legs = original.transferGroupId
+    ? await prisma.ledgerEntry.findMany({
+        where: { transferGroupId: original.transferGroupId },
+      })
+    : [original];
+
+  return legs
+    .filter(
+      (leg) =>
+        leg.walletId === params.walletId && leg.direction === LedgerDirection.credit,
+    )
+    .reduce((total, leg) => total + leg.amount, 0n);
+}
+
 export async function walletRefund(
   ctx: CoreContext,
   params: { originalEntryId: string; reason?: string; idempotencyKey?: string },
@@ -292,14 +364,6 @@ export async function walletRefund(
     "wallet:refund",
     { originalEntryId: params.originalEntryId },
     async () => {
-      // A grant may only reverse an entry on its own wallet.
-      const original = await prisma.ledgerEntry.findUnique({
-        where: { id: params.originalEntryId },
-      });
-      if (!original || original.walletId !== wallet.id) {
-        throw new CoreError("No such entry on this wallet.", "ENTRY_NOT_FOUND", 404);
-      }
-
       const { entries, replayed } = await refundTransaction({
         originalEntryId: params.originalEntryId,
         reason: params.reason,
@@ -311,6 +375,19 @@ export async function walletRefund(
         balancePaise: (await getBalance(wallet.id)).toString(),
         replayed,
       };
+    },
+    {
+      // Also does the ownership check, so a refund of somebody else's entry is
+      // refused — and audited — before anything is written.
+      resolveOutboundAmount: async () => {
+        const outbound = await outboundAmountOfRefund({
+          originalEntryId: params.originalEntryId,
+          walletId: wallet.id,
+        });
+        // Zero means the reversal brings money back in, which is not spending
+        // and must not be capped.
+        return outbound > 0n ? outbound : null;
+      },
     },
   );
 }

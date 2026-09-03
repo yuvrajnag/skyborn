@@ -76,24 +76,23 @@ export async function readJson(request: Request): Promise<Record<string, unknown
 }
 
 /**
- * Amounts cross the wire as integer paise strings, never as JSON numbers —
- * a rupee amount above 2^53 paise would silently lose precision as a double,
- * and a fractional paise is not a thing that exists.
+ * Amounts cross the wire as integer paise strings, never as JSON numbers — a
+ * rupee amount above 2^53 paise would silently lose precision as a double, and
+ * a fractional paise is not a thing that exists.
+ *
+ * A JSON number is rejected outright rather than accepted when it happens to be
+ * an integer. Accepting the safe ones taught callers a habit that breaks
+ * silently at scale, and it contradicted both this comment and the published
+ * schema, which declares amount_paise a string.
  */
 export function requirePaise(body: Record<string, unknown>, field = "amount_paise"): bigint {
   const raw = body[field];
   if (raw === undefined || raw === null || raw === "") {
     throw new CoreError(`${field} is required.`, "MISSING_FIELD");
   }
-  if (typeof raw === "number") {
-    if (!Number.isInteger(raw)) {
-      throw new CoreError(`${field} must be a whole number of paise.`, "INVALID_AMOUNT");
-    }
-    return BigInt(raw);
-  }
   if (typeof raw !== "string" || !/^\d+$/.test(raw.trim())) {
     throw new CoreError(
-      `${field} must be a whole number of paise, as a string.`,
+      `${field} must be a whole number of paise, as a string. ₹1 is "100".`,
       "INVALID_AMOUNT",
     );
   }

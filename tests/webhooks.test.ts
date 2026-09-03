@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import http from "node:http";
 import { after, describe, it } from "node:test";
 
@@ -8,6 +9,8 @@ import {
   MAX_ATTEMPTS,
   WebhookError,
   assertPublicDestination,
+  postSignedJson,
+  resolvePublicDestination,
   attemptDelivery,
   createEndpoint,
   emitEvent,
@@ -389,5 +392,93 @@ describe("grant.approved fires on approval", () => {
     assert.ok(processed >= 1);
 
     listener.close();
+  });
+});
+
+describe("DNS rebinding cannot redirect a delivery", () => {
+  /**
+   * Validating a hostname and then letting an HTTP client resolve it again is a
+   * window, not a check: an attacker controlling the record with a short TTL
+   * answers the validation with a public address and the connection with a
+   * private one moments later.
+   *
+   * This proves the send uses the address that was validated. Two servers are
+   * started on different loopback addresses; the URL's hostname resolves to the
+   * first, but the second is pinned. If the pin is honoured, only the second
+   * ever sees the request.
+   */
+  function listenOn(host: string) {
+    const hits: string[] = [];
+    const server = http.createServer((req, res) => {
+      hits.push(req.url ?? "/");
+      res.writeHead(200);
+      res.end("ok");
+    });
+    const ready = new Promise<number>((resolve) =>
+      server.listen(0, host, () => resolve((server.address() as { port: number }).port)),
+    );
+    return { hits, ready, close: () => server.close() };
+  }
+
+  it("sends to the validated address, not a fresh resolution", async () => {
+    const resolved = listenOn("127.0.0.1"); // what the hostname resolves to
+    const rebound = listenOn("127.0.0.2"); // where a rebind would send it
+    const port = await resolved.ready;
+    await rebound.ready;
+    rebound.close();
+
+    // Same port on the pinned address, so only the address differs.
+    const attacker = http.createServer((req, res) => {
+      rebound.hits.push(req.url ?? "/");
+      res.writeHead(200);
+      res.end("ok");
+    });
+    await new Promise<void>((r) => attacker.listen(port, "127.0.0.2", () => r()));
+
+    const response = await postSignedJson({
+      url: `http://localhost:${port}/hook`, // resolves to 127.0.0.1
+      address: "127.0.0.2", // but this is what was validated
+      family: 4,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ probe: true }),
+      timeoutMs: 5_000,
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(rebound.hits.length, 1, "the pinned address must receive the request");
+    assert.equal(
+      resolved.hits.length,
+      0,
+      "the address the hostname resolves to must not be contacted",
+    );
+
+    resolved.close();
+    attacker.close();
+  });
+
+  it("returns the address it validated, so the caller can pin it", async () => {
+    const destination = await resolvePublicDestination("https://example.com/hook");
+    assert.ok(destination.address.length > 0);
+    assert.equal(isPrivateAddress(destination.address), false);
+    assert.ok(destination.family === 4 || destination.family === 6);
+  });
+
+  it("refuses before dialing when the validated address is internal", async () => {
+    await assert.rejects(
+      resolvePublicDestination("https://10.0.0.5/hook"),
+      (e: WebhookError) => e.code === "PRIVATE_DESTINATION",
+    );
+  });
+
+  it("preserves the hostname for SNI rather than swapping in the IP", async () => {
+    // A URL rewritten to https://<ip>/ would fail certificate verification;
+    // the pin must live in the lookup, not in the URL. Asserted structurally:
+    // postSignedJson takes the address separately from the URL it is given.
+    const source = readFileSync("src/server/webhooks.ts", "utf8");
+    assert.match(source, /host: url\.hostname/);
+    assert.ok(
+      !/new URL\(`https?:\/\/\$\{.*address/.test(source),
+      "the address must never be substituted into the URL",
+    );
   });
 });

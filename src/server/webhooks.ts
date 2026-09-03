@@ -1,5 +1,7 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { lookup } from "node:dns/promises";
+import http from "node:http";
+import https from "node:https";
 import net from "node:net";
 
 import { Prisma } from "@prisma/client";
@@ -113,13 +115,18 @@ function isLoopback(ip: string): boolean {
 }
 
 /**
- * Resolves the host and refuses anything internal.
+ * Resolves the host, refuses anything internal, and returns the address that
+ * was actually validated.
  *
- * Checked at registration *and* again immediately before each delivery: a name
- * that resolved publicly when it was registered can be re-pointed at an
- * internal address afterwards, and only the check at send time sees that.
+ * Returning the address is the point. Validating a hostname and then handing
+ * that same hostname to an HTTP client leaves a rebinding window: the client
+ * does its own DNS lookup, and an attacker controlling the record with a short
+ * TTL can answer the check with a public address and the connection with a
+ * private one moments later. The caller must dial the address this returns.
  */
-export async function assertPublicDestination(rawUrl: string): Promise<void> {
+export async function resolvePublicDestination(
+  rawUrl: string,
+): Promise<{ address: string; family: 4 | 6 }> {
   const url = new URL(rawUrl);
   const host = url.hostname.replace(/^\[|\]$/g, "");
 
@@ -142,6 +149,8 @@ export async function assertPublicDestination(rawUrl: string): Promise<void> {
     throw new WebhookError(`Could not resolve "${url.hostname}".`, "UNRESOLVABLE_HOST");
   }
 
+  // Every address the name answers with has to be acceptable, not just the one
+  // that happens to be used — otherwise a round-robin record slips through.
   for (const address of addresses) {
     if (!isPrivateAddress(address)) continue;
     if (isLoopback(address) && loopbackAllowed()) continue;
@@ -152,6 +161,90 @@ export async function assertPublicDestination(rawUrl: string): Promise<void> {
       "PRIVATE_DESTINATION",
     );
   }
+
+  const address = addresses[0];
+  return { address, family: net.isIPv6(address) ? 6 : 4 };
+}
+
+/** Validates a destination without needing the address back. */
+export async function assertPublicDestination(rawUrl: string): Promise<void> {
+  await resolvePublicDestination(rawUrl);
+}
+
+export type DeliveryResponse = { status: number };
+
+/**
+ * POSTs to a URL while dialing one already-validated IP address.
+ *
+ * `fetch` cannot express this: it resolves the hostname itself, so pinning
+ * would mean substituting the IP into the URL, which breaks SNI and makes
+ * certificate hostname verification fail for every https destination.
+ *
+ * Node's own http/https clients take a `lookup` hook that overrides address
+ * resolution while leaving `host` — and therefore the TLS `servername` and the
+ * certificate check — as the original hostname. That closes the rebinding
+ * window without weakening TLS at all. (undici's equivalent `connect.lookup`
+ * would work too, but undici is not importable here and this needs no
+ * dependency.)
+ */
+export function postSignedJson(params: {
+  url: string;
+  /** The address validated by resolvePublicDestination. */
+  address: string;
+  family: 4 | 6;
+  headers: Record<string, string>;
+  body: string;
+  timeoutMs: number;
+}): Promise<DeliveryResponse> {
+  const url = new URL(params.url);
+  const transport = url.protocol === "https:" ? https : http;
+
+  return new Promise((resolve, reject) => {
+    const request = transport.request(
+      {
+        protocol: url.protocol,
+        // Kept as the hostname on purpose: this is what SNI and certificate
+        // verification use. Only the address lookup is overridden.
+        host: url.hostname,
+        port: url.port || (url.protocol === "https:" ? 443 : 80),
+        path: `${url.pathname}${url.search}`,
+        method: "POST",
+        headers: {
+          ...params.headers,
+          "Content-Length": Buffer.byteLength(params.body).toString(),
+        },
+        lookup: (
+          _hostname: string,
+          options: { all?: boolean },
+          callback: (
+            err: NodeJS.ErrnoException | null,
+            address: string | Array<{ address: string; family: number }>,
+            family?: number,
+          ) => void,
+        ) => {
+          if (options?.all) {
+            callback(null, [{ address: params.address, family: params.family }]);
+          } else {
+            callback(null, params.address, params.family);
+          }
+        },
+      },
+      (response) => {
+        // The body is deliberately discarded — a receiver's response content is
+        // not something this service should read back or store. Draining it
+        // lets the socket be reused rather than hanging.
+        response.resume();
+        response.on("end", () => resolve({ status: response.statusCode ?? 0 }));
+      },
+    );
+
+    request.setTimeout(params.timeoutMs, () => {
+      request.destroy(new Error("Webhook delivery timed out."));
+    });
+    request.on("error", reject);
+    request.write(params.body);
+    request.end();
+  });
 }
 
 export async function createEndpoint(params: {
@@ -301,12 +394,17 @@ export async function attemptDelivery(deliveryId: string) {
   let delivered = false;
 
   try {
-    // Re-checked here, not just at registration: a hostname that resolved
+    // Re-validated here, not just at registration: a hostname that resolved
     // publicly then can be re-pointed at an internal address afterwards.
-    await assertPublicDestination(delivery.endpoint.url);
+    //
+    // The address that passed validation is then dialed directly, so the
+    // connection cannot land somewhere the check never saw.
+    const destination = await resolvePublicDestination(delivery.endpoint.url);
 
-    const response = await fetch(delivery.endpoint.url, {
-      method: "POST",
+    const response = await postSignedJson({
+      url: delivery.endpoint.url,
+      address: destination.address,
+      family: destination.family,
       headers: {
         "Content-Type": "application/json",
         "Skyborn-Signature": signPayload({
@@ -318,11 +416,11 @@ export async function attemptDelivery(deliveryId: string) {
         "Skyborn-Delivery": delivery.id,
       },
       body,
-      signal: AbortSignal.timeout(DELIVERY_TIMEOUT_MS),
+      timeoutMs: DELIVERY_TIMEOUT_MS,
     });
 
     responseCode = response.status;
-    delivered = response.ok;
+    delivered = response.status >= 200 && response.status < 300;
   } catch {
     // Timeout, DNS failure, refused connection, or a destination that now
     // resolves somewhere internal — all just a failed attempt.
